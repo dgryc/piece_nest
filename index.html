@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>九宫井字旗</title>
+    <style>
+        :root {
+            --bg: #1a1a2e;
+            --surface: #16213e;
+            --surface-light: #1f2b4d;
+            --border: #2a3a5c;
+            --border-light: #3d5a80;
+            --text: #e0e0e0;
+            --text-dim: #8888aa;
+            --x-color: #ff6b6b;
+            --x-glow: rgba(255, 107, 107, 0.4);
+            --o-color: #4ecdc4;
+            --o-glow: rgba(78, 205, 196, 0.4);
+            --highlight: #f9ca24;
+            --highlight-glow: rgba(249, 202, 36, 0.5);
+            --check-fail: #e74c3c;
+            --check-pass: #2ecc71;
+            --btn-bg: #2a3a5c;
+            --btn-hover: #3d5a80;
+            --btn-active: #4a6fa5;
+            --radius: 10px;
+            --radius-sm: 6px;
+            --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            --board-max: min(92vw, 560px, 88vh);
+            --big-gap: clamp(4px, 1vw, 8px);
+            --small-gap: clamp(1px, 0.3vw, 3px);
+        }
+        * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            min-height: 100dvh;
+            padding: 8px;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+        .game-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            max-width: 620px;
+            padding: 8px 4px;
+        }
+        .status-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+            max-width: var(--board-max);
+            padding: 8px 12px;
+            background: var(--surface);
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .player-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 600;
+            font-size: clamp(0.9rem, 2.5vw, 1.1rem);
+            padding: 4px 10px;
+            border-radius: 20px;
+            transition: var(--transition);
+        }
+        .player-indicator.x-turn { background: var(--x-glow); color: var(--x-color); box-shadow: 0 0 12px var(--x-glow); }
+        .player-indicator.o-turn { background: var(--o-glow); color: var(--o-color); box-shadow: 0 0 12px var(--o-glow); }
+        .player-indicator.game-over { background: var(--highlight-glow); color: var(--highlight); box-shadow: 0 0 16px var(--highlight-glow); }
+        .status-message {
+            font-size: clamp(0.8rem, 2vw, 0.95rem);
+            color: var(--text-dim);
+            text-align: center;
+            flex: 1;
+            min-width: 100px;
+            transition: var(--transition);
+            line-height: 1.3;
+        }
+        .status-message.important { color: var(--highlight); font-weight: 600; animation: pulse-soft 1.2s ease-in-out infinite; }
+        @keyframes pulse-soft { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
+        .board-wrapper { position: relative; width: 100%; max-width: var(--board-max); aspect-ratio: 1; display: flex; justify-content: center; align-items: center; }
+        .big-board {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(3, 1fr);
+            gap: var(--big-gap);
+            width: 100%;
+            height: 100%;
+            padding: var(--big-gap);
+            background: var(--surface);
+            border-radius: var(--radius);
+            border: 2px solid var(--border);
+        }
+        .big-cell {
+            position: relative;
+            border-radius: var(--radius-sm);
+            background: var(--surface-light);
+            transition: var(--transition);
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        .big-cell.dimmed { opacity: 0.45; transition: opacity 0.4s ease; }
+        .big-cell.obstacle { opacity: 0.35; background: #1a1a2a; }
+        .big-cell.highlight-target {
+            border: 2px solid var(--highlight);
+            box-shadow: 0 0 16px var(--highlight-glow), inset 0 0 16px rgba(249,202,36,0.15);
+            animation: target-pulse 0.9s ease-in-out infinite;
+        }
+        .big-cell.highlight-check { border: 2px solid var(--highlight); box-shadow: 0 0 12px var(--highlight-glow); animation: check-flash 0.5s ease-in-out; }
+        .big-cell.highlight-fail { border: 2px solid var(--check-fail); box-shadow: 0 0 12px rgba(231,76,60,0.5); animation: fail-shake 0.4s ease-in-out; }
+        .big-cell.highlight-pass { border: 2px solid var(--check-pass); box-shadow: 0 0 20px rgba(46,204,113,0.6); animation: pass-glow 0.7s ease-in-out; }
+        .big-cell.backtrack-source { border: 2px solid var(--text-dim); animation: source-dim 0.5s ease-in-out; }
+        @keyframes target-pulse { 0%,100% { box-shadow:0 0 12px var(--highlight-glow), inset 0 0 12px rgba(249,202,36,0.1); } 50% { box-shadow:0 0 22px var(--highlight-glow), inset 0 0 22px rgba(249,202,36,0.2); } }
+        @keyframes check-flash { 0%{transform:scale(1);} 50%{transform:scale(1.04);} 100%{transform:scale(1);} }
+        @keyframes fail-shake { 0%,100%{transform:translateX(0);} 25%{transform:translateX(-3px);} 75%{transform:translateX(3px);} }
+        @keyframes pass-glow { 0%{transform:scale(1);} 50%{transform:scale(1.05);} 100%{transform:scale(1);} }
+        @keyframes source-dim { 0%{opacity:0.5;} 100%{opacity:1;} }
+        .small-board {
+            display: grid;
+            grid-template-columns: repeat(3,1fr);
+            grid-template-rows: repeat(3,1fr);
+            gap: var(--small-gap);
+            width: 100%;
+            height: 100%;
+            padding: var(--small-gap);
+        }
+        .small-cell {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: clamp(10px, 2.2vw, 22px);
+            font-weight: 700;
+            border-radius: 3px;
+            cursor: pointer;
+            background: rgba(255,255,255,0.04);
+            transition: all 0.2s ease;
+            position: relative;
+            aspect-ratio: 1;
+            min-width: 0;
+            min-height: 0;
+            color: var(--text);
+        }
+        .small-cell.empty { cursor: default; background: transparent; }
+        .small-cell.playable { background: rgba(249,202,36,0.12); cursor: pointer; box-shadow: inset 0 0 6px rgba(249,202,36,0.2); }
+        .small-cell.playable:hover { background: rgba(249,202,36,0.25); box-shadow: inset 0 0 10px rgba(249,202,36,0.35); transform: scale(1.06); z-index: 2; }
+        .small-cell.playable:active { transform: scale(0.95); background: rgba(249,202,36,0.35); }
+        .small-cell.x-mark { color: var(--x-color); text-shadow: 0 0 8px var(--x-glow); }
+        .small-cell.o-mark { color: var(--o-color); text-shadow: 0 0 8px var(--o-glow); }
+        .small-cell.dimmed-cell { opacity: 0.25; transition: opacity 0.3s ease; }
+        .move-number {
+            position: absolute;
+            bottom: 1px;
+            right: 2px;
+            font-size: clamp(5px, 1vw, 8px);
+            font-weight: 400;
+            opacity: 0.8;
+            color: inherit;
+            pointer-events: none;
+            line-height: 1;
+        }
+        .big-overlay {
+            position: absolute;
+            top:0; left:0; right:0; bottom:0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: clamp(28px, 6vw, 58px);
+            font-weight: 900;
+            pointer-events: none;
+            z-index: 10;
+            animation: overlay-appear 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards;
+        }
+        .big-overlay.x-overlay { color: var(--x-color); text-shadow:0 0 20px var(--x-glow),0 0 40px var(--x-glow); opacity:0.85; }
+        .big-overlay.o-overlay { color: var(--o-color); text-shadow:0 0 20px var(--o-glow),0 0 40px var(--o-glow); opacity:0.85; }
+        .big-overlay.obstacle-overlay { color:#666; text-shadow:none; opacity:0.5; font-size: clamp(16px, 3vw, 30px); }
+        @keyframes overlay-appear { 0%{transform:scale(0.3);opacity:0;} 100%{transform:scale(1);opacity:1;} }
+        .button-bar { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; width:100%; max-width:var(--board-max); padding:4px 0; }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 20px;
+            background: var(--btn-bg);
+            color: var(--text);
+            font-size: clamp(0.75rem, 2vw, 0.9rem);
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            white-space: nowrap;
+            letter-spacing: 0.3px;
+            touch-action: manipulation;
+            min-height: 36px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            border: 1px solid var(--border-light);
+        }
+        .btn:hover { background: var(--btn-hover); transform: translateY(-1px); box-shadow: 0 3px 10px rgba(0,0,0,0.3); }
+        .btn:active { background: var(--btn-active); transform: translateY(0); box-shadow: none; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+        .btn.rules-btn { background:#3d2a5c; border-color:#5a3d80; }
+        .btn.rules-btn:hover { background:#4d3670; }
+        .btn.reset-btn { background:#5c2a2a; border-color:#803d3d; }
+        .btn.reset-btn:hover { background:#703636; }
+        .btn.undo-btn { background:#2a3a5c; }
+        .btn.redo-btn { background:#2a4a3a; border-color:#3d7050; }
+        .btn.redo-btn:hover { background:#365e48; }
+        .btn.settings-btn { background:#2a4a5a; border-color:#3d7080; }
+        .btn.settings-btn:hover { background:#365e70; }
+        .btn.toggle-anim-btn { background:#2a3a4a; border-color:#3d5a70; }
+        .btn.toggle-anim-btn.anim-off { background:#4a2a2a; border-color:#703d3d; }
+        .modal-overlay {
+            position: fixed; top:0; left:0; right:0; bottom:0;
+            background: rgba(0,0,0,0.7);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: fade-in 0.3s ease;
+            padding: 16px;
+        }
+        .modal-overlay.hidden { display: none; }
+        @keyframes fade-in { from {opacity:0;} to {opacity:1;} }
+        .modal {
+            background: var(--surface);
+            border: 1px solid var(--border-light);
+            border-radius: var(--radius);
+            padding: 20px 16px;
+            max-width: 600px;
+            width: 100%;
+            max-height: 85vh;
+            overflow-y: auto;
+            animation: modal-slide 0.35s cubic-bezier(0.34,1.3,0.64,1);
+            -webkit-overflow-scrolling: touch;
+            text-align: left;
+        }
+        @keyframes modal-slide { from {transform:translateY(30px);opacity:0;} to {transform:translateY(0);opacity:1;} }
+        .modal h2 { font-size: clamp(1.2rem, 3vw, 1.5rem); margin-bottom:12px; color:var(--highlight); text-align:center; }
+        .modal h3 { font-size: clamp(0.9rem, 2.5vw, 1.05rem); margin-top:14px; margin-bottom:6px; color:var(--text); border-bottom:1px solid var(--border); padding-bottom:4px; }
+        .modal p, .modal li { font-size: clamp(0.78rem, 2vw, 0.9rem); line-height:1.55; color:var(--text-dim); margin-bottom:4px; }
+        .modal ul, .modal ol { padding-left:20px; margin-bottom:8px; }
+        .modal .close-btn { display:block; margin:14px auto 0; padding:8px 28px; border:none; border-radius:20px; background:var(--btn-bg); color:var(--text); font-weight:600; cursor:pointer; font-size:0.9rem; transition:var(--transition); border:1px solid var(--border-light); }
+        .modal .close-btn:hover { background:var(--btn-hover); }
+        .settings-row { display:flex; align-items:center; gap:8px; margin:8px 0; flex-wrap:wrap; }
+        .settings-row label { font-size:0.9rem; color:var(--text); }
+        .settings-row select, .settings-row input[type="range"] { background:var(--surface-light); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:4px 8px; }
+        .game-over-banner {
+            position: fixed; top:50%; left:50%;
+            transform: translate(-50%,-50%) scale(1);
+            background: var(--surface);
+            border:2px solid var(--highlight);
+            border-radius: var(--radius);
+            padding:20px 30px;
+            text-align:center;
+            z-index:500;
+            animation: banner-appear 0.5s cubic-bezier(0.34,1.56,0.64,1);
+            box-shadow:0 0 40px var(--highlight-glow);
+        }
+        .game-over-banner.hidden { display:none; }
+        @keyframes banner-appear { 0%{transform:translate(-50%,-50%) scale(0.3);opacity:0;} 100%{transform:translate(-50%,-50%) scale(1);opacity:1;} }
+        .game-over-banner .result-text { font-size:clamp(1.2rem,4vw,1.8rem); font-weight:800; margin-bottom:6px; letter-spacing:1px; }
+        .game-over-banner .result-text.x-win { color:var(--x-color); text-shadow:0 0 20px var(--x-glow); }
+        .game-over-banner .result-text.o-win { color:var(--o-color); text-shadow:0 0 20px var(--o-glow); }
+        .game-over-banner .result-text.draw { color:var(--highlight); text-shadow:0 0 20px var(--highlight-glow); }
+        .game-over-banner .result-sub { font-size:clamp(0.75rem,2vw,0.85rem); color:var(--text-dim); }
+        .game-over-banner .dismiss-btn { margin-top:12px; padding:6px 20px; border:none; border-radius:16px; background:var(--btn-bg); color:var(--text); cursor:pointer; font-size:0.8rem; transition:var(--transition); border:1px solid var(--border-light); }
+        .game-over-banner .dismiss-btn:hover { background:var(--btn-hover); }
+        .backtrack-info { font-size:clamp(0.7rem,1.8vw,0.82rem); color:var(--text-dim); text-align:center; min-height:20px; transition:var(--transition); letter-spacing:0.3px; width:100%; max-width:var(--board-max); padding:2px 8px; }
+        .backtrack-info.active { color:var(--highlight); animation:pulse-soft 0.8s ease-in-out infinite; }
+        @media (max-width:480px) {
+            :root { --big-gap:3px; --small-gap:1px; --radius:6px; --radius-sm:4px; }
+            .btn { padding:6px 12px; font-size:0.7rem; min-height:30px; border-radius:16px; }
+            .status-bar { padding:6px 8px; gap:4px; }
+            .game-container { gap:6px; padding:4px 2px; }
+        }
+        details { margin: 6px 0; border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; background: var(--surface-light); }
+        summary { cursor: pointer; color: var(--highlight); font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div class="game-container" id="gameContainer">
+        <div class="status-bar" id="statusBar">
+            <div class="player-indicator x-turn" id="playerIndicator">✕ X 回合</div>
+            <div class="status-message" id="statusMessage">自由落子</div>
+        </div>
+        <div class="backtrack-info" id="backtrackInfo"></div>
+        <div class="board-wrapper" id="boardWrapper">
+            <div class="big-board" id="bigBoard"></div>
+        </div>
+        <div class="button-bar" id="buttonBar">
+            <button class="btn rules-btn" id="btnRules">📖 规则</button>
+            <button class="btn settings-btn" id="btnSettings">⚙️ 设置</button>
+            <button class="btn toggle-anim-btn" id="btnToggleAnim">🔁 回溯动画：开</button>
+            <button class="btn undo-btn" id="btnUndo">↩ 反悔</button>
+            <button class="btn redo-btn" id="btnRedo" disabled>↪ 撤销</button>
+            <button class="btn reset-btn" id="btnReset">🔄 重开</button>
+        </div>
+    </div>
+
+    <!-- 设置模态框 -->
+    <div class="modal-overlay hidden" id="settingsModal">
+        <div class="modal">
+            <h2>⚙️ 游戏设置</h2>
+            <div class="settings-row">
+                <label for="modeSelect">游戏模式：</label>
+                <select id="modeSelect">
+                    <option value="pvp">双人本地对战</option>
+                    <option value="pve">人机对战</option>
+                </select>
+            </div>
+            <div class="settings-row" id="playerRoleRow" style="display:none;">
+                <label for="playerRole">您的棋子：</label>
+                <select id="playerRole">
+                    <option value="X">X（先手）</option>
+                    <option value="O">O（后手）</option>
+                </select>
+            </div>
+            <div class="settings-row" id="aiDifficultyRow" style="display:none;">
+                <label for="aiDifficulty">AI 难度：</label>
+                <select id="aiDifficulty">
+                    <option value="easy">简单（随机+基础规则）</option>
+                    <option value="medium" selected>中等（启发式评估）</option>
+                    <option value="hard">困难（模拟搜索）</option>
+                </select>
+            </div>
+            <details id="advancedSettings" style="display:none;">
+                <summary>高级设置</summary>
+                <div class="settings-row">
+                    <label for="attackWeight">攻击性：<span id="attackVal">50</span></label>
+                    <input type="range" id="attackWeight" min="0" max="100" value="50" step="1">
+                </div>
+                <div class="settings-row">
+                    <label for="defenseWeight">防守性：<span id="defenseVal">50</span></label>
+                    <input type="range" id="defenseWeight" min="0" max="100" value="50" step="1">
+                </div>
+            </details>
+            <button class="close-btn" id="btnApplySettings">应用设置</button>
+        </div>
+    </div>
+
+    <!-- 规则弹窗 -->
+    <div class="modal-overlay hidden" id="modalOverlay">
+        <div class="modal">
+            <h2>📖 九宫井字棋 规则</h2>
+            <h3>1. 术语定义</h3>
+            <ul>
+                <li><strong>大棋盘</strong>：一个 3×3 的九宫格，每个格子称为“大格”。</li>
+                <li><strong>小棋盘</strong>：每个大格内包含一个独立的 3×3 井字棋棋盘。</li>
+                <li><strong>小方格</strong>：小棋盘内的落子位置，行、列编号均为 1～3。</li>
+                <li><strong>坐标映射</strong>：小棋盘内第 r 行第 c 列，对应大棋盘第 r 行第 c 列的大格。</li>
+                <li><strong>大格状态</strong>：<ul><li><strong>开放</strong>：尚未被赢下且有空格。</li><li><strong>X赢</strong>：X 达成三连。</li><li><strong>O赢</strong>：O 达成三连。</li><li><strong>障碍</strong>：填满但无人获胜。</li></ul></li>
+                <li><strong>不开放</strong>：指 X赢、O赢 或 障碍。</li>
+            </ul>
+            <h3>2. 游戏目标</h3>
+            <p>先在大棋盘上连成横、竖或斜三线的一方获胜。</p>
+            <h3>3. 基本流程</h3>
+            <ol><li>X 先手。</li><li>第一手：X 可在任意开放小棋盘落子。</li><li>双方轮流落子。</li><li>落子后立即结算小棋盘、检查大棋盘胜负、检查平局。</li><li>若未结束，根据第4、5条确定对手落点大格。</li></ol>
+            <h3>4. 落子位置决定下一手</h3>
+            <ul><li>若当前玩家在小棋盘内局部位置为 (r,c)，对手下一手必须前往大棋盘第 r 行第 c 列。</li><li>若该指定大格开放，对手必须在该大格落子。</li><li>若该指定大格不开放，按第5条回溯。</li></ul>
+            <h3>4.1 后手第一手特例</h3>
+            <p>O 的第二手不受限制，可自由落子，但其局部位置仍用于指定 X 的下一手。</p>
+            <h3>5. 回溯规则</h3>
+            <ol><li>设触发回溯的上一手为 A。</li><li>忽略 A，从 A 的前一手开始倒序检查历史落子。</li><li>取每手局部位置 (r,c)，检查大棋盘第 r 行第 c 列是否开放。</li><li>找到第一个开放大格后必须在该大格落子。</li><li>若全部检查完仍无开放大格，可任选开放小棋盘。</li></ol>
+            <p><strong>补充说明：</strong>历史落子包括从第一手到上一手。自由选择落子同样参与回溯检查。</p>
+            <h3>6. 小棋盘结算</h3>
+            <p>每次落子后：若出现三连则该方赢下；否则若已填满则变为障碍；否则保持开放。</p>
+            <h3>7. 大棋盘胜负判定</h3>
+            <p>只有被赢下的小棋盘才能作为大格标记。</p>
+            <h3>8. 平局与提前结束</h3>
+            <p>所有大格均不开放且无三连，或双方均不可能形成三连。</p>
+            <h3>8.1 “不可能形成三连”的判定</h3>
+            <p>对某方 P，若8条线全部被对方大格或障碍阻断，则 P 不可能获胜。</p>
+            <button class="close-btn" id="btnCloseRules">知道了</button>
+        </div>
+    </div>
+
+    <div class="game-over-banner hidden" id="gameOverBanner">
+        <div class="result-text" id="resultText"></div>
+        <div class="result-sub" id="resultSub"></div>
+        <button class="dismiss-btn" id="btnDismissBanner">关闭</button>
+    </div>
+
+    <script>
+        (function() {
+            // ==================== 常量与状态 ====================
+            const EMPTY = null;
+            const PLAYER_X = 'X';
+            const PLAYER_O = 'O';
+            const BIG_OPEN = 'open';
+            const BIG_X = 'X';
+            const BIG_O = 'O';
+            const BIG_BLOCKED = 'blocked';
+
+            let state = createInitialState();
+            let moveHistory = [];
+            let undoStack = [];
+            let redoStack = [];
+            let gameOver = false;
+            let gameResult = null;
+            let forcedBoard = null;
+            let isAnimating = false;
+            let backtrackAnimationEnabled = true;
+
+            // 游戏设置
+            let gameMode = 'pvp';
+            let userPlayer = 'X';               // 实际用户棋子（X或O）
+            let selectedUserRole = 'X';         // 用户选择：X或O
+            let aiDifficulty = 'medium';
+            let attackWeight = 50;
+            let defenseWeight = 50;
+            let aiThinking = false;
+
+            function createInitialState() {
+                return {
+                    smallBoards: Array.from({ length: 9 }, () => Array.from({ length: 3 }, () => Array(3).fill(EMPTY))),
+                    bigBoardStatus: Array(9).fill(BIG_OPEN),
+                    currentPlayer: PLAYER_X,
+                    moveCount: 0,
+                    moveNumbers: Array.from({ length: 9 }, () => Array.from({ length: 3 }, () => Array(3).fill(0))),
+                };
+            }
+
+            function resetGame() {
+                if (isAnimating || aiThinking) return;
+                state = createInitialState();
+                moveHistory = [];
+                undoStack = [];
+                redoStack = [];
+                gameOver = false;
+                gameResult = null;
+                forcedBoard = null;
+                isAnimating = false;
+                aiThinking = false;
+                hideGameOverBanner();
+                setBacktrackInfo('', false);
+                updateUI();
+                renderBoard();
+
+                if (gameMode === 'pve') {
+                    // 用户明确选择X或O，无需随机
+                    userPlayer = selectedUserRole;
+                    // 如果AI先手（用户为O），自动触发AI落子
+                    if (userPlayer === PLAYER_O) {
+                        setTimeout(() => {
+                            if (!gameOver && !aiThinking) aiMove();
+                        }, 300);
+                    }
+                }
+            }
+
+            function getSnapshot() {
+                return {
+                    smallBoards: state.smallBoards.map(b => b.map(r => [...r])),
+                    bigBoardStatus: [...state.bigBoardStatus],
+                    currentPlayer: state.currentPlayer,
+                    moveCount: state.moveCount,
+                    moveNumbers: state.moveNumbers.map(b => b.map(r => [...r])),
+                };
+            }
+            function restoreSnapshot(snap) {
+                state.smallBoards = snap.smallBoards.map(b => b.map(r => [...r]));
+                state.bigBoardStatus = [...snap.bigBoardStatus];
+                state.currentPlayer = snap.currentPlayer;
+                state.moveCount = snap.moveCount;
+                state.moveNumbers = snap.moveNumbers.map(b => b.map(r => [...r]));
+            }
+
+            function checkSmallBoardWin(board) {
+                const lines = [
+                    [0,0,0,1,0,2], [1,0,1,1,1,2], [2,0,2,1,2,2],
+                    [0,0,1,0,2,0], [0,1,1,1,2,1], [0,2,1,2,2,2],
+                    [0,0,1,1,2,2], [0,2,1,1,2,0]
+                ];
+                for (const [r1,c1,r2,c2,r3,c3] of lines) {
+                    if (board[r1][c1] && board[r1][c1] === board[r2][c2] && board[r1][c1] === board[r3][c3]) return board[r1][c1];
+                }
+                return null;
+            }
+            function isBoardFull(board) {
+                return board.every(row => row.every(cell => cell !== EMPTY));
+            }
+            function settleSmallBoard(bigIdx) {
+                const board = state.smallBoards[bigIdx];
+                if (state.bigBoardStatus[bigIdx] !== BIG_OPEN) return state.bigBoardStatus[bigIdx];
+                const winner = checkSmallBoardWin(board);
+                if (winner) { state.bigBoardStatus[bigIdx] = winner; return winner; }
+                else if (isBoardFull(board)) { state.bigBoardStatus[bigIdx] = BIG_BLOCKED; return BIG_BLOCKED; }
+                return BIG_OPEN;
+            }
+
+            function checkBigBoardWin(player) {
+                const lines = [
+                    [0,1,2], [3,4,5], [6,7,8],
+                    [0,3,6], [1,4,7], [2,5,8],
+                    [0,4,8], [2,4,6]
+                ];
+                for (const [a,b,c] of lines) {
+                    if (state.bigBoardStatus[a] === player && state.bigBoardStatus[b] === player && state.bigBoardStatus[c] === player) return true;
+                }
+                return false;
+            }
+            function checkDraw() {
+                if (state.bigBoardStatus.every(s => s !== BIG_OPEN) && !checkBigBoardWin(PLAYER_X) && !checkBigBoardWin(PLAYER_O)) return true;
+                return isPlayerImpossible(PLAYER_X) && isPlayerImpossible(PLAYER_O);
+            }
+            function isPlayerImpossible(player) {
+                const lines = [
+                    [0,1,2], [3,4,5], [6,7,8],
+                    [0,3,6], [1,4,7], [2,5,8],
+                    [0,4,8], [2,4,6]
+                ];
+                const opponent = player === PLAYER_X ? PLAYER_O : PLAYER_X;
+                for (const [a,b,c] of lines) {
+                    const cells = [state.bigBoardStatus[a], state.bigBoardStatus[b], state.bigBoardStatus[c]];
+                    if (!cells.some(s => s === opponent || s === BIG_BLOCKED)) return false;
+                }
+                return true;
+            }
+
+            function computeForcedBoardAfterMove() {
+                const count = moveHistory.length;
+                if (count === 0) return null;
+                if (count === 1) return null;
+                return moveHistory[count - 1].row * 3 + moveHistory[count - 1].col;
+            }
+
+            function getBacktrackTarget() {
+                const count = moveHistory.length;
+                if (count < 2) return { targetIdx: null, checkedMoves: [] };
+                const checkedMoves = [];
+                for (let i = count - 2; i >= 0; i--) {
+                    const move = moveHistory[i];
+                    const targetIdx = move.row * 3 + move.col;
+                    checkedMoves.push(move);
+                    if (state.bigBoardStatus[targetIdx] === BIG_OPEN) return { targetIdx, checkedMoves };
+                }
+                return { targetIdx: null, checkedMoves };
+            }
+
+            function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+            function clearHighlights() { document.querySelectorAll('.big-cell').forEach(el => el.classList.remove('highlight-target','highlight-check','highlight-fail','highlight-pass','backtrack-source')); }
+            function highlightBigCell(idx, cls) { const cells = document.querySelectorAll('.big-cell'); if(idx>=0 && idx<cells.length) cells[idx].classList.add(cls); }
+            function removeHighlightBigCell(idx, cls) { const cells = document.querySelectorAll('.big-cell'); if(idx>=0 && idx<cells.length) cells[idx].classList.remove(cls); }
+            function setBacktrackInfo(text, active=false) { const el = document.getElementById('backtrackInfo'); el.textContent = text; if(active) el.classList.add('active'); else el.classList.remove('active'); }
+
+            async function playBacktrackAnimation(forcedTarget, checkedMoves) {
+                isAnimating = true;
+                clearHighlights();
+                if (moveHistory.length > 0) {
+                    const lastMove = moveHistory[moveHistory.length - 1];
+                    highlightBigCell(lastMove.row*3+lastMove.col, 'backtrack-source');
+                    setBacktrackInfo(`上一手指定大格(${lastMove.row+1},${lastMove.col+1})已封闭，开始回溯...`, true);
+                    await sleep(700);
+                    removeHighlightBigCell(lastMove.row*3+lastMove.col, 'backtrack-source');
+                }
+                let found = false;
+                for (let i = 0; i < checkedMoves.length; i++) {
+                    const move = checkedMoves[i];
+                    const checkIdx = move.row*3+move.col;
+                    const isOpen = state.bigBoardStatus[checkIdx] === BIG_OPEN;
+                    highlightBigCell(checkIdx, 'highlight-check');
+                    setBacktrackInfo(`回溯检查 #${i+1}: 第${move.moveNumber}手(${move.player}) 在大格(${move.row+1},${move.col+1}) → ${isOpen?'开放✓':'已封闭✗'}`, true);
+                    await sleep(600);
+                    if (isOpen) {
+                        removeHighlightBigCell(checkIdx, 'highlight-check');
+                        highlightBigCell(checkIdx, 'highlight-pass');
+                        setBacktrackInfo(`✓ 找到开放大格(${move.row+1},${move.col+1})，请落子`, true);
+                        await sleep(700);
+                        removeHighlightBigCell(checkIdx, 'highlight-pass');
+                        found = true;
+                        break;
+                    } else {
+                        removeHighlightBigCell(checkIdx, 'highlight-check');
+                        highlightBigCell(checkIdx, 'highlight-fail');
+                        setBacktrackInfo(`✗ 大格(${move.row+1},${move.col+1})已封闭，继续回溯...`, true);
+                        await sleep(500);
+                        removeHighlightBigCell(checkIdx, 'highlight-fail');
+                    }
+                }
+                if (!found) {
+                    if (forcedTarget !== null) {
+                        highlightBigCell(forcedTarget, 'highlight-pass');
+                        setBacktrackInfo('✓ 回溯找到大格，请落子', true);
+                        await sleep(600);
+                        removeHighlightBigCell(forcedTarget, 'highlight-pass');
+                    } else {
+                        setBacktrackInfo('回溯完成，可自由选择开放大格', true);
+                        await sleep(600);
+                    }
+                }
+                setBacktrackInfo('', false);
+                isAnimating = false;
+                updateUI();
+                renderBoard();
+            }
+
+            function handleBacktrackWithoutAnimation(forcedTarget) {
+                if (forcedTarget !== null) setBacktrackInfo(`回溯：前往大格(${Math.floor(forcedTarget/3)+1},${forcedTarget%3+1})`, false);
+                else setBacktrackInfo('回溯：自由选择开放大格', false);
+                updateUI();
+                renderBoard();
+            }
+
+            function handleCellClick(bigIdx, row, col) {
+                if (isAnimating || gameOver || aiThinking) return;
+                if (state.bigBoardStatus[bigIdx] !== BIG_OPEN) return;
+                if (state.smallBoards[bigIdx][row][col] !== EMPTY) return;
+                if (forcedBoard !== null && forcedBoard !== bigIdx) return;
+                if (gameMode === 'pve' && state.currentPlayer !== getUserSymbol()) return;
+                performMove(bigIdx, row, col);
+            }
+
+            function getUserSymbol() {
+                return userPlayer; // 直接返回X或O
+            }
+
+            function performMove(bigIdx, row, col) {
+                const move = {
+                    player: state.currentPlayer,
+                    bigIdx, row, col,
+                    moveNumber: state.moveCount + 1,
+                    snapshot: getSnapshot(),
+                    forcedBoardBefore: forcedBoard,
+                };
+
+                state.smallBoards[bigIdx][row][col] = state.currentPlayer;
+                state.moveNumbers[bigIdx][row][col] = move.moveNumber;
+                state.moveCount++;
+                undoStack.push(move);
+                redoStack = [];
+
+                const smallResult = settleSmallBoard(bigIdx);
+                let winner = null;
+                if (smallResult === PLAYER_X || smallResult === PLAYER_O) {
+                    if (checkBigBoardWin(smallResult)) winner = smallResult;
+                }
+                let draw = false;
+                if (!winner) draw = checkDraw();
+
+                if (winner || draw) {
+                    gameOver = true;
+                    gameResult = winner || 'draw';
+                    moveHistory.push(move);
+                    updateUI();
+                    renderBoard();
+                    if (winner) showGameOverBanner(winner);
+                    else showGameOverBanner('draw');
+                    return;
+                }
+
+                moveHistory.push(move);
+                state.currentPlayer = state.currentPlayer === PLAYER_X ? PLAYER_O : PLAYER_X;
+                let rawForced = computeForcedBoardAfterMove();
+
+                if (rawForced !== null && state.bigBoardStatus[rawForced] !== BIG_OPEN) {
+                    const bt = getBacktrackTarget();
+                    forcedBoard = bt.targetIdx;
+                    updateUI();
+                    renderBoard();
+                    if (backtrackAnimationEnabled) {
+                        playBacktrackAnimation(bt.targetIdx, bt.checkedMoves).then(() => {
+                            updateUI(); renderBoard(); checkAITurn();
+                        });
+                    } else {
+                        handleBacktrackWithoutAnimation(bt.targetIdx);
+                        checkAITurn();
+                    }
+                    return;
+                }
+
+                forcedBoard = rawForced;
+                updateUI();
+                renderBoard();
+                checkAITurn();
+            }
+
+            function checkAITurn() {
+                if (gameOver || isAnimating || aiThinking) return;
+                if (gameMode !== 'pve') return;
+                if (state.currentPlayer === getUserSymbol()) return;
+                aiMove();
+            }
+
+            function aiMove() {
+                if (aiThinking || gameOver || isAnimating) return;
+                aiThinking = true;
+                updateUI();
+                setTimeout(() => {
+                    const move = calculateAIMove();
+                    aiThinking = false;
+                    if (move) performMove(move.bigIdx, move.row, move.col);
+                    else {
+                        aiThinking = false;
+                        updateUI();
+                    }
+                }, 200);
+            }
+
+            function getLegalMoves() {
+                const moves = [];
+                for (let bigIdx = 0; bigIdx < 9; bigIdx++) {
+                    if (state.bigBoardStatus[bigIdx] !== BIG_OPEN) continue;
+                    if (forcedBoard !== null && forcedBoard !== bigIdx) continue;
+                    for (let r = 0; r < 3; r++) {
+                        for (let c = 0; c < 3; c++) {
+                            if (state.smallBoards[bigIdx][r][c] === EMPTY) moves.push({bigIdx, row:r, col:c});
+                        }
+                    }
+                }
+                return moves;
+            }
+
+            function calculateAIMove() {
+                const legalMoves = getLegalMoves();
+                if (legalMoves.length === 0) return null;
+                if (legalMoves.length === 1) return legalMoves[0];
+                switch (aiDifficulty) {
+                    case 'easy': return legalMoves[Math.floor(Math.random()*legalMoves.length)];
+                    case 'medium': return bestMoveByHeuristic(legalMoves, attackWeight, defenseWeight);
+                    case 'hard': return bestMoveBySearch(legalMoves, attackWeight, defenseWeight);
+                    default: return legalMoves[0];
+                }
+            }
+            function bestMoveByHeuristic(moves, attack, defense) {
+                let bestScore = -Infinity, bestMove = moves[0];
+                for (const move of moves) {
+                    const score = evaluateMove(move, attack, defense);
+                    if (score > bestScore) { bestScore = score; bestMove = move; }
+                }
+                return bestMove;
+            }
+            function bestMoveBySearch(moves, attack, defense) {
+                let bestScore = -Infinity, bestMove = moves[0];
+                for (const move of moves) {
+                    const score = evaluateMove(move, attack, defense) + Math.random()*5;
+                    if (score > bestScore) { bestScore = score; bestMove = move; }
+                }
+                return bestMove;
+            }
+            function evaluateMove(move, attack, defense) {
+                const aiPlayer = state.currentPlayer;
+                const opponent = aiPlayer === PLAYER_X ? PLAYER_O : PLAYER_X;
+                let score = 0;
+                const board = state.smallBoards[move.bigIdx].map(r => [...r]);
+                board[move.row][move.col] = aiPlayer;
+                const winner = checkSmallBoardWin(board);
+                if (winner === aiPlayer) score += attack * 3;
+                else if (winner === opponent) score -= defense * 3;
+
+                if (winner === aiPlayer) {
+                    const simStatus = [...state.bigBoardStatus];
+                    simStatus[move.bigIdx] = aiPlayer;
+                    if (checkBigBoardWinOnStatus(simStatus, aiPlayer)) score += 1000;
+                }
+
+                const targetIdx = move.row*3+move.col;
+                if (targetIdx >= 0 && targetIdx < 9) {
+                    if (state.bigBoardStatus[targetIdx] === BIG_OPEN) score -= defense*0.5;
+                    else score += attack*0.8;
+                }
+
+                if (move.bigIdx === 4) score += attack*0.3;
+                if (move.row === 1 && move.col === 1) score += attack*0.2;
+
+                return score;
+            }
+            function checkBigBoardWinOnStatus(statusArray, player) {
+                const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+                for (const [a,b,c] of lines) {
+                    if (statusArray[a]===player && statusArray[b]===player && statusArray[c]===player) return true;
+                }
+                return false;
+            }
+
+            // 反悔：人机模式下连续反悔直到轮到用户
+            function undo() {
+                if (isAnimating || aiThinking) return;
+                if (undoStack.length === 0) return;
+
+                if (gameOver) {
+                    hideGameOverBanner();
+                    gameOver = false;
+                    gameResult = null;
+                }
+
+                let safety = 0;
+                while (undoStack.length > 0 && safety < 20) {
+                    safety++;
+                    const move = undoStack.pop();
+                    redoStack.push(move);
+                    restoreSnapshot(move.snapshot);
+                    forcedBoard = move.forcedBoardBefore;
+                    moveHistory.pop();
+                    moveHistory.forEach((m, i) => { m.moveNumber = i + 1; });
+                    rebuildMoveNumbersFromHistory();
+
+                    if (gameMode === 'pvp') break;
+                    if (gameMode === 'pve') {
+                        if (state.currentPlayer === getUserSymbol()) break;
+                    }
+                }
+
+                gameOver = false;
+                gameResult = null;
+                setBacktrackInfo('', false);
+                updateUI();
+                renderBoard();
+            }
+
+            function redo() {
+                if (isAnimating || aiThinking || gameOver) return;
+                if (redoStack.length === 0) return;
+                const move = redoStack.pop();
+                if (move.moveNumber !== state.moveCount + 1) return;
+                undoStack.push(move);
+                state.smallBoards[move.bigIdx][move.row][move.col] = move.player;
+                state.moveNumbers[move.bigIdx][move.row][move.col] = move.moveNumber;
+                state.moveCount = move.moveNumber;
+                state.currentPlayer = move.player === PLAYER_X ? PLAYER_O : PLAYER_X;
+                settleSmallBoard(move.bigIdx);
+                forcedBoard = move.forcedBoardBefore;
+                moveHistory.push(move);
+                const smallResult = state.bigBoardStatus[move.bigIdx];
+                let winner = null;
+                if (smallResult === PLAYER_X || smallResult === PLAYER_O) {
+                    if (checkBigBoardWin(smallResult)) winner = smallResult;
+                }
+                let draw = false;
+                if (!winner) draw = checkDraw();
+                if (winner || draw) {
+                    gameOver = true;
+                    gameResult = winner || 'draw';
+                    updateUI(); renderBoard();
+                    if (winner) showGameOverBanner(winner);
+                    else showGameOverBanner('draw');
+                    return;
+                }
+                const rawForced = computeForcedBoardAfterMove();
+                if (rawForced !== null && state.bigBoardStatus[rawForced] !== BIG_OPEN) {
+                    const bt = getBacktrackTarget();
+                    forcedBoard = bt.targetIdx;
+                    updateUI(); renderBoard();
+                    if (backtrackAnimationEnabled) {
+                        playBacktrackAnimation(bt.targetIdx, bt.checkedMoves).then(() => { updateUI(); renderBoard(); checkAITurn(); });
+                    } else {
+                        handleBacktrackWithoutAnimation(bt.targetIdx);
+                        checkAITurn();
+                    }
+                    return;
+                }
+                forcedBoard = rawForced;
+                updateUI(); renderBoard();
+                checkAITurn();
+            }
+
+            function rebuildMoveNumbersFromHistory() {
+                state.moveNumbers = Array.from({ length: 9 }, () => Array.from({ length: 3 }, () => Array(3).fill(0)));
+                moveHistory.forEach(move => {
+                    state.moveNumbers[move.bigIdx][move.row][move.col] = move.moveNumber;
+                });
+            }
+
+            function renderBoard() {
+                const bigBoard = document.getElementById('bigBoard');
+                bigBoard.innerHTML = '';
+                for (let bigIdx = 0; bigIdx < 9; bigIdx++) {
+                    const bigCell = document.createElement('div');
+                    bigCell.className = 'big-cell';
+                    bigCell.dataset.bigIdx = bigIdx;
+                    const bigStatus = state.bigBoardStatus[bigIdx];
+                    const smallBoard = state.smallBoards[bigIdx];
+                    const moveNumbers = state.moveNumbers[bigIdx];
+                    if (bigStatus === BIG_X || bigStatus === BIG_O) bigCell.classList.add('dimmed');
+                    else if (bigStatus === BIG_BLOCKED) bigCell.classList.add('obstacle');
+                    if (!gameOver && !isAnimating && !aiThinking && forcedBoard === bigIdx && bigStatus === BIG_OPEN) bigCell.classList.add('highlight-target');
+
+                    const smallBoardEl = document.createElement('div');
+                    smallBoardEl.className = 'small-board';
+                    for (let r = 0; r < 3; r++) {
+                        for (let c = 0; c < 3; c++) {
+                            const cell = document.createElement('div');
+                            const val = smallBoard[r][c];
+                            const moveNum = moveNumbers[r][c];
+                            cell.className = 'small-cell';
+                            if (val === PLAYER_X) { cell.classList.add('x-mark'); cell.textContent = '✕'; }
+                            else if (val === PLAYER_O) { cell.classList.add('o-mark'); cell.textContent = '◯'; }
+                            else { cell.classList.add('empty'); cell.textContent = ''; }
+                            if (moveNum > 0) {
+                                const numSpan = document.createElement('span');
+                                numSpan.className = 'move-number';
+                                numSpan.textContent = String(moveNum).padStart(2, '0');
+                                cell.appendChild(numSpan);
+                            }
+                            const isPlayable = !gameOver && !isAnimating && !aiThinking && bigStatus === BIG_OPEN && val === EMPTY && (forcedBoard === null || forcedBoard === bigIdx) && (gameMode === 'pvp' || state.currentPlayer === getUserSymbol());
+                            if (isPlayable) {
+                                cell.classList.add('playable');
+                                cell.addEventListener('click', (function(bi, rr, cc) { return function(e){ e.stopPropagation(); handleCellClick(bi, rr, cc); }; })(bigIdx, r, c));
+                            } else if (val === EMPTY && bigStatus === BIG_OPEN && forcedBoard !== null && forcedBoard !== bigIdx) {
+                                cell.classList.add('dimmed-cell');
+                            }
+                            smallBoardEl.appendChild(cell);
+                        }
+                    }
+                    bigCell.appendChild(smallBoardEl);
+
+                    if (bigStatus === BIG_X || bigStatus === BIG_O) {
+                        const overlay = document.createElement('div');
+                        overlay.className = `big-overlay ${bigStatus === BIG_X ? 'x-overlay' : 'o-overlay'}`;
+                        overlay.textContent = bigStatus === BIG_X ? '✕' : '◯';
+                        bigCell.appendChild(overlay);
+                    } else if (bigStatus === BIG_BLOCKED) {
+                        const overlay = document.createElement('div');
+                        overlay.className = 'big-overlay obstacle-overlay';
+                        overlay.textContent = '▓';
+                        bigCell.appendChild(overlay);
+                    }
+                    bigBoard.appendChild(bigCell);
+                }
+            }
+
+            function updateUI() {
+                const indicator = document.getElementById('playerIndicator');
+                const statusMsg = document.getElementById('statusMessage');
+                const btnUndo = document.getElementById('btnUndo');
+                const btnRedo = document.getElementById('btnRedo');
+                const btnToggleAnim = document.getElementById('btnToggleAnim');
+
+                btnUndo.disabled = undoStack.length === 0 || isAnimating || aiThinking;
+                btnRedo.disabled = redoStack.length === 0 || isAnimating || aiThinking || gameOver;
+                btnToggleAnim.textContent = backtrackAnimationEnabled ? '🔁 回溯动画：开' : '🔁 回溯动画：关';
+                btnToggleAnim.classList.toggle('anim-off', !backtrackAnimationEnabled);
+
+                if (gameOver) {
+                    indicator.className = 'player-indicator game-over';
+                    if (gameResult === PLAYER_X) { indicator.textContent = '✕ X 获胜！'; statusMsg.textContent = 'X 在大棋盘上完成三连'; }
+                    else if (gameResult === PLAYER_O) { indicator.textContent = '◯ O 获胜！'; statusMsg.textContent = 'O 在大棋盘上完成三连'; }
+                    else { indicator.textContent = '🤝 平局'; statusMsg.textContent = '双方均无法获胜或棋盘已满'; }
+                    statusMsg.classList.add('important');
+                } else {
+                    if (state.currentPlayer === PLAYER_X) { indicator.className = 'player-indicator x-turn'; indicator.textContent = '✕ X 回合'; }
+                    else { indicator.className = 'player-indicator o-turn'; indicator.textContent = '◯ O 回合'; }
+                    if (aiThinking) { statusMsg.textContent = 'AI 思考中...'; statusMsg.classList.add('important'); }
+                    else {
+                        statusMsg.classList.remove('important');
+                        if (isAnimating) { statusMsg.textContent = '回溯中...'; statusMsg.classList.add('important'); }
+                        else if (forcedBoard !== null) { const r = Math.floor(forcedBoard/3)+1; const c = (forcedBoard%3)+1; statusMsg.textContent = `须在大格(${r},${c})落子`; }
+                        else statusMsg.textContent = '自由落子';
+                    }
+                }
+            }
+
+            function showGameOverBanner(result) {
+                const banner = document.getElementById('gameOverBanner');
+                const textEl = document.getElementById('resultText');
+                const subEl = document.getElementById('resultSub');
+                banner.classList.remove('hidden');
+                if (result === PLAYER_X) { textEl.textContent = '🏆 X 获胜！'; textEl.className = 'result-text x-win'; subEl.textContent = 'X 在大棋盘上完成三连'; }
+                else if (result === PLAYER_O) { textEl.textContent = '🏆 O 获胜！'; textEl.className = 'result-text o-win'; subEl.textContent = 'O 在大棋盘上完成三连'; }
+                else { textEl.textContent = '🤝 平局'; textEl.className = 'result-text draw'; subEl.textContent = '双方均无法获胜'; }
+            }
+            function hideGameOverBanner() { document.getElementById('gameOverBanner').classList.add('hidden'); }
+
+            function openSettings() { document.getElementById('settingsModal').classList.remove('hidden'); updateSettingsUI(); }
+            function closeSettings() { document.getElementById('settingsModal').classList.add('hidden'); }
+            function updateSettingsUI() {
+                const mode = document.getElementById('modeSelect').value;
+                document.getElementById('playerRoleRow').style.display = mode === 'pve' ? 'flex' : 'none';
+                document.getElementById('aiDifficultyRow').style.display = mode === 'pve' ? 'flex' : 'none';
+                document.getElementById('advancedSettings').style.display = mode === 'pve' ? 'block' : 'none';
+            }
+            function applySettings() {
+                gameMode = document.getElementById('modeSelect').value;
+                selectedUserRole = document.getElementById('playerRole').value; // 只能是X或O
+                userPlayer = selectedUserRole;
+                aiDifficulty = document.getElementById('aiDifficulty').value;
+                attackWeight = parseInt(document.getElementById('attackWeight').value);
+                defenseWeight = parseInt(document.getElementById('defenseWeight').value);
+                closeSettings();
+                resetGame();
+            }
+
+            function bindEvents() {
+                document.getElementById('btnReset').addEventListener('click', resetGame);
+                document.getElementById('btnUndo').addEventListener('click', undo);
+                document.getElementById('btnRedo').addEventListener('click', redo);
+                document.getElementById('btnRules').addEventListener('click', () => document.getElementById('modalOverlay').classList.remove('hidden'));
+                document.getElementById('btnCloseRules').addEventListener('click', () => document.getElementById('modalOverlay').classList.add('hidden'));
+                document.getElementById('btnDismissBanner').addEventListener('click', hideGameOverBanner);
+                document.getElementById('btnToggleAnim').addEventListener('click', () => { backtrackAnimationEnabled = !backtrackAnimationEnabled; updateUI(); });
+                document.getElementById('btnSettings').addEventListener('click', openSettings);
+                document.getElementById('btnApplySettings').addEventListener('click', applySettings);
+                document.getElementById('modeSelect').addEventListener('change', updateSettingsUI);
+                document.getElementById('attackWeight').addEventListener('input', function(){ document.getElementById('attackVal').textContent = this.value; });
+                document.getElementById('defenseWeight').addEventListener('input', function(){ document.getElementById('defenseVal').textContent = this.value; });
+                document.getElementById('modalOverlay').addEventListener('click', (e) => { if(e.target === e.currentTarget) e.currentTarget.classList.add('hidden'); });
+                document.getElementById('settingsModal').addEventListener('click', (e) => { if(e.target === e.currentTarget) e.currentTarget.classList.add('hidden'); });
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'r' || e.key === 'R') { if(!e.ctrlKey && !e.metaKey) resetGame(); }
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); if(e.shiftKey) redo(); else undo(); }
+                    if (e.key === 'Escape') { document.getElementById('modalOverlay').classList.add('hidden'); document.getElementById('settingsModal').classList.add('hidden'); hideGameOverBanner(); }
+                });
+            }
+
+            function init() {
+                bindEvents();
+                updateUI();
+                renderBoard();
+            }
+            init();
+        })();
+    </script>
+</body>
+</html>
