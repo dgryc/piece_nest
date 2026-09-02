@@ -45,6 +45,7 @@
             user-select: none;
             -webkit-user-select: none;
             touch-action: manipulation;
+            position: relative;
         }
         .game-container {
             display: flex;
@@ -54,6 +55,17 @@
             width: 100%;
             max-width: 620px;
             padding: 8px 4px;
+            position: relative;
+        }
+        .credit {
+            position: absolute;
+            top: -5px;
+            left: 8px;
+            font-size: 11px;
+            color: rgba(255,255,255,0.35);
+            pointer-events: none;
+            z-index: 20;
+            letter-spacing: 0.5px;
         }
         .status-bar {
             display: flex;
@@ -256,7 +268,7 @@
         .modal .close-btn:hover { background:var(--btn-hover); }
         .settings-row { display:flex; align-items:center; gap:8px; margin:8px 0; flex-wrap:wrap; }
         .settings-row label { font-size:0.9rem; color:var(--text); }
-        .settings-row select, .settings-row input[type="range"] { background:var(--surface-light); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:4px 8px; }
+        .settings-row select, .settings-row input[type="range"], .settings-row input[type="number"] { background:var(--surface-light); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:4px 8px; }
         .game-over-banner {
             position: fixed; top:50%; left:50%;
             transform: translate(-50%,-50%) scale(1);
@@ -288,10 +300,12 @@
         }
         details { margin: 6px 0; border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; background: var(--surface-light); }
         summary { cursor: pointer; color: var(--highlight); font-weight: 600; }
+        .train-status { margin-top: 8px; font-size: 0.85rem; color: var(--text-dim); }
     </style>
 </head>
 <body>
     <div class="game-container" id="gameContainer">
+        <div class="credit">网页和游戏规则均由ryc创造</div>
         <div class="status-bar" id="statusBar">
             <div class="player-indicator x-turn" id="playerIndicator">✕ X 回合</div>
             <div class="status-message" id="statusMessage">自由落子</div>
@@ -331,13 +345,13 @@
             <div class="settings-row" id="aiDifficultyRow" style="display:none;">
                 <label for="aiDifficulty">AI 难度：</label>
                 <select id="aiDifficulty">
-                    <option value="easy">简单（随机+基础规则）</option>
-                    <option value="medium" selected>中等（启发式评估）</option>
-                    <option value="hard">困难（模拟搜索）</option>
+                    <option value="simple">简单（启发式）</option>
+                    <option value="medium" selected>中等（MCTS 1500次模拟）</option>
+                    <option value="trained" id="trainedOption" disabled>困难（训练AI+MCTS 5000次）(如为灰色请先点击下方按钮训练)</option>
                 </select>
             </div>
             <details id="advancedSettings" style="display:none;">
-                <summary>高级设置</summary>
+                <summary>高级设置(谨慎修改)</summary>
                 <div class="settings-row">
                     <label for="attackWeight">攻击性：<span id="attackVal">50</span></label>
                     <input type="range" id="attackWeight" min="0" max="100" value="50" step="1">
@@ -347,6 +361,13 @@
                     <input type="range" id="defenseWeight" min="0" max="100" value="50" step="1">
                 </div>
             </details>
+            <div class="settings-row" id="trainingSection" style="display:none; border-top:1px solid var(--border); padding-top:12px; margin-top:12px;">
+                <label for="trainSeconds">训练AI（秒）：</label>
+                <input type="number" id="trainSeconds" value="20" min="1" max="300" step="1" style="width:80px;">
+                <button class="btn" id="btnTrainAI">开始训练</button>
+                <button class="btn" id="btnStopTrain" disabled>停止</button>
+                <div class="train-status" id="trainStatus">未训练</div>
+            </div>
             <button class="close-btn" id="btnApplySettings">应用设置</button>
         </div>
     </div>
@@ -416,12 +437,18 @@
 
             // 游戏设置
             let gameMode = 'pvp';
-            let userPlayer = 'X';               // 实际用户棋子（X或O）
-            let selectedUserRole = 'X';         // 用户选择：X或O
+            let userPlayer = 'X';
+            let selectedUserRole = 'X';
             let aiDifficulty = 'medium';
             let attackWeight = 50;
             let defenseWeight = 50;
             let aiThinking = false;
+
+            // 训练相关
+            let trainingInProgress = false;
+            let trainingStopRequested = false;
+            let trainedWeights = null;
+            let trainTotalGames = 0;
 
             function createInitialState() {
                 return {
@@ -434,7 +461,7 @@
             }
 
             function resetGame() {
-                if (isAnimating || aiThinking) return;
+                if (isAnimating || aiThinking || trainingInProgress) return;
                 state = createInitialState();
                 moveHistory = [];
                 undoStack = [];
@@ -448,15 +475,10 @@
                 setBacktrackInfo('', false);
                 updateUI();
                 renderBoard();
-
                 if (gameMode === 'pve') {
-                    // 用户明确选择X或O，无需随机
                     userPlayer = selectedUserRole;
-                    // 如果AI先手（用户为O），自动触发AI落子
                     if (userPlayer === PLAYER_O) {
-                        setTimeout(() => {
-                            if (!gameOver && !aiThinking) aiMove();
-                        }, 300);
+                        setTimeout(() => { if (!gameOver && !aiThinking) aiMove(); }, 300);
                     }
                 }
             }
@@ -478,35 +500,25 @@
                 state.moveNumbers = snap.moveNumbers.map(b => b.map(r => [...r]));
             }
 
+            // ==================== 游戏核心逻辑 ====================
             function checkSmallBoardWin(board) {
-                const lines = [
-                    [0,0,0,1,0,2], [1,0,1,1,1,2], [2,0,2,1,2,2],
-                    [0,0,1,0,2,0], [0,1,1,1,2,1], [0,2,1,2,2,2],
-                    [0,0,1,1,2,2], [0,2,1,1,2,0]
-                ];
+                const lines = [[0,0,0,1,0,2],[1,0,1,1,1,2],[2,0,2,1,2,2],[0,0,1,0,2,0],[0,1,1,1,2,1],[0,2,1,2,2,2],[0,0,1,1,2,2],[0,2,1,1,2,0]];
                 for (const [r1,c1,r2,c2,r3,c3] of lines) {
                     if (board[r1][c1] && board[r1][c1] === board[r2][c2] && board[r1][c1] === board[r3][c3]) return board[r1][c1];
                 }
                 return null;
             }
-            function isBoardFull(board) {
-                return board.every(row => row.every(cell => cell !== EMPTY));
-            }
+            function isBoardFull(board) { return board.every(row => row.every(cell => cell !== EMPTY)); }
             function settleSmallBoard(bigIdx) {
                 const board = state.smallBoards[bigIdx];
                 if (state.bigBoardStatus[bigIdx] !== BIG_OPEN) return state.bigBoardStatus[bigIdx];
                 const winner = checkSmallBoardWin(board);
                 if (winner) { state.bigBoardStatus[bigIdx] = winner; return winner; }
-                else if (isBoardFull(board)) { state.bigBoardStatus[bigIdx] = BIG_BLOCKED; return BIG_BLOCKED; }
+                if (isBoardFull(board)) { state.bigBoardStatus[bigIdx] = BIG_BLOCKED; return BIG_BLOCKED; }
                 return BIG_OPEN;
             }
-
             function checkBigBoardWin(player) {
-                const lines = [
-                    [0,1,2], [3,4,5], [6,7,8],
-                    [0,3,6], [1,4,7], [2,5,8],
-                    [0,4,8], [2,4,6]
-                ];
+                const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
                 for (const [a,b,c] of lines) {
                     if (state.bigBoardStatus[a] === player && state.bigBoardStatus[b] === player && state.bigBoardStatus[c] === player) return true;
                 }
@@ -517,26 +529,20 @@
                 return isPlayerImpossible(PLAYER_X) && isPlayerImpossible(PLAYER_O);
             }
             function isPlayerImpossible(player) {
-                const lines = [
-                    [0,1,2], [3,4,5], [6,7,8],
-                    [0,3,6], [1,4,7], [2,5,8],
-                    [0,4,8], [2,4,6]
-                ];
-                const opponent = player === PLAYER_X ? PLAYER_O : PLAYER_X;
+                const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+                const opp = player === PLAYER_X ? PLAYER_O : PLAYER_X;
                 for (const [a,b,c] of lines) {
                     const cells = [state.bigBoardStatus[a], state.bigBoardStatus[b], state.bigBoardStatus[c]];
-                    if (!cells.some(s => s === opponent || s === BIG_BLOCKED)) return false;
+                    if (!cells.some(s => s === opp || s === BIG_BLOCKED)) return false;
                 }
                 return true;
             }
-
             function computeForcedBoardAfterMove() {
                 const count = moveHistory.length;
                 if (count === 0) return null;
                 if (count === 1) return null;
                 return moveHistory[count - 1].row * 3 + moveHistory[count - 1].col;
             }
-
             function getBacktrackTarget() {
                 const count = moveHistory.length;
                 if (count < 2) return { targetIdx: null, checkedMoves: [] };
@@ -550,7 +556,7 @@
                 return { targetIdx: null, checkedMoves };
             }
 
-            function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+            function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
             function clearHighlights() { document.querySelectorAll('.big-cell').forEach(el => el.classList.remove('highlight-target','highlight-check','highlight-fail','highlight-pass','backtrack-source')); }
             function highlightBigCell(idx, cls) { const cells = document.querySelectorAll('.big-cell'); if(idx>=0 && idx<cells.length) cells[idx].classList.add(cls); }
             function removeHighlightBigCell(idx, cls) { const cells = document.querySelectorAll('.big-cell'); if(idx>=0 && idx<cells.length) cells[idx].classList.remove(cls); }
@@ -615,7 +621,7 @@
             }
 
             function handleCellClick(bigIdx, row, col) {
-                if (isAnimating || gameOver || aiThinking) return;
+                if (isAnimating || gameOver || aiThinking || trainingInProgress) return;
                 if (state.bigBoardStatus[bigIdx] !== BIG_OPEN) return;
                 if (state.smallBoards[bigIdx][row][col] !== EMPTY) return;
                 if (forcedBoard !== null && forcedBoard !== bigIdx) return;
@@ -623,9 +629,7 @@
                 performMove(bigIdx, row, col);
             }
 
-            function getUserSymbol() {
-                return userPlayer; // 直接返回X或O
-            }
+            function getUserSymbol() { return userPlayer; }
 
             function performMove(bigIdx, row, col) {
                 const move = {
@@ -635,7 +639,6 @@
                     snapshot: getSnapshot(),
                     forcedBoardBefore: forcedBoard,
                 };
-
                 state.smallBoards[bigIdx][row][col] = state.currentPlayer;
                 state.moveNumbers[bigIdx][row][col] = move.moveNumber;
                 state.moveCount++;
@@ -654,8 +657,7 @@
                     gameOver = true;
                     gameResult = winner || 'draw';
                     moveHistory.push(move);
-                    updateUI();
-                    renderBoard();
+                    updateUI(); renderBoard();
                     if (winner) showGameOverBanner(winner);
                     else showGameOverBanner('draw');
                     return;
@@ -664,119 +666,81 @@
                 moveHistory.push(move);
                 state.currentPlayer = state.currentPlayer === PLAYER_X ? PLAYER_O : PLAYER_X;
                 let rawForced = computeForcedBoardAfterMove();
-
                 if (rawForced !== null && state.bigBoardStatus[rawForced] !== BIG_OPEN) {
                     const bt = getBacktrackTarget();
                     forcedBoard = bt.targetIdx;
-                    updateUI();
-                    renderBoard();
+                    updateUI(); renderBoard();
                     if (backtrackAnimationEnabled) {
-                        playBacktrackAnimation(bt.targetIdx, bt.checkedMoves).then(() => {
-                            updateUI(); renderBoard(); checkAITurn();
-                        });
+                        playBacktrackAnimation(bt.targetIdx, bt.checkedMoves).then(() => { updateUI(); renderBoard(); checkAITurn(); });
                     } else {
                         handleBacktrackWithoutAnimation(bt.targetIdx);
                         checkAITurn();
                     }
                     return;
                 }
-
                 forcedBoard = rawForced;
-                updateUI();
-                renderBoard();
+                updateUI(); renderBoard();
                 checkAITurn();
             }
 
             function checkAITurn() {
-                if (gameOver || isAnimating || aiThinking) return;
+                if (gameOver || isAnimating || aiThinking || trainingInProgress) return;
                 if (gameMode !== 'pve') return;
                 if (state.currentPlayer === getUserSymbol()) return;
                 aiMove();
             }
 
+            // ==================== MCTS AI ====================
             function aiMove() {
-                if (aiThinking || gameOver || isAnimating) return;
+                if (aiThinking || gameOver || isAnimating || trainingInProgress) return;
                 aiThinking = true;
                 updateUI();
                 setTimeout(() => {
-                    const move = calculateAIMove();
+                    const move = mctsFindBestMove(getLegalMoves());
                     aiThinking = false;
                     if (move) performMove(move.bigIdx, move.row, move.col);
-                    else {
-                        aiThinking = false;
-                        updateUI();
-                    }
-                }, 200);
+                    else { aiThinking = false; updateUI(); }
+                }, 30);
             }
 
             function getLegalMoves() {
                 const moves = [];
-                for (let bigIdx = 0; bigIdx < 9; bigIdx++) {
-                    if (state.bigBoardStatus[bigIdx] !== BIG_OPEN) continue;
-                    if (forcedBoard !== null && forcedBoard !== bigIdx) continue;
+                for (let bi = 0; bi < 9; bi++) {
+                    if (state.bigBoardStatus[bi] !== BIG_OPEN) continue;
+                    if (forcedBoard !== null && forcedBoard !== bi) continue;
                     for (let r = 0; r < 3; r++) {
                         for (let c = 0; c < 3; c++) {
-                            if (state.smallBoards[bigIdx][r][c] === EMPTY) moves.push({bigIdx, row:r, col:c});
+                            if (state.smallBoards[bi][r][c] === EMPTY) moves.push({bigIdx: bi, row: r, col: c});
                         }
                     }
                 }
                 return moves;
             }
 
-            function calculateAIMove() {
-                const legalMoves = getLegalMoves();
-                if (legalMoves.length === 0) return null;
-                if (legalMoves.length === 1) return legalMoves[0];
-                switch (aiDifficulty) {
-                    case 'easy': return legalMoves[Math.floor(Math.random()*legalMoves.length)];
-                    case 'medium': return bestMoveByHeuristic(legalMoves, attackWeight, defenseWeight);
-                    case 'hard': return bestMoveBySearch(legalMoves, attackWeight, defenseWeight);
-                    default: return legalMoves[0];
-                }
-            }
-            function bestMoveByHeuristic(moves, attack, defense) {
-                let bestScore = -Infinity, bestMove = moves[0];
-                for (const move of moves) {
-                    const score = evaluateMove(move, attack, defense);
-                    if (score > bestScore) { bestScore = score; bestMove = move; }
-                }
-                return bestMove;
-            }
-            function bestMoveBySearch(moves, attack, defense) {
-                let bestScore = -Infinity, bestMove = moves[0];
-                for (const move of moves) {
-                    const score = evaluateMove(move, attack, defense) + Math.random()*5;
-                    if (score > bestScore) { bestScore = score; bestMove = move; }
-                }
-                return bestMove;
-            }
-            function evaluateMove(move, attack, defense) {
-                const aiPlayer = state.currentPlayer;
-                const opponent = aiPlayer === PLAYER_X ? PLAYER_O : PLAYER_X;
+            // 启发式评估（用于MCTS先验和rollout）
+            function heuristicEvalMove(move, player, attack, defense, centerBonus) {
                 let score = 0;
                 const board = state.smallBoards[move.bigIdx].map(r => [...r]);
-                board[move.row][move.col] = aiPlayer;
+                board[move.row][move.col] = player;
                 const winner = checkSmallBoardWin(board);
-                if (winner === aiPlayer) score += attack * 3;
-                else if (winner === opponent) score -= defense * 3;
-
-                if (winner === aiPlayer) {
+                const opp = player === PLAYER_X ? PLAYER_O : PLAYER_X;
+                if (winner === player) score += attack * 3;
+                else if (winner === opp) score -= defense * 3;
+                if (winner === player) {
                     const simStatus = [...state.bigBoardStatus];
-                    simStatus[move.bigIdx] = aiPlayer;
-                    if (checkBigBoardWinOnStatus(simStatus, aiPlayer)) score += 1000;
+                    simStatus[move.bigIdx] = player;
+                    if (checkBigBoardWinOnStatus(simStatus, player)) score += 1000;
                 }
-
                 const targetIdx = move.row*3+move.col;
                 if (targetIdx >= 0 && targetIdx < 9) {
                     if (state.bigBoardStatus[targetIdx] === BIG_OPEN) score -= defense*0.5;
                     else score += attack*0.8;
                 }
-
-                if (move.bigIdx === 4) score += attack*0.3;
-                if (move.row === 1 && move.col === 1) score += attack*0.2;
-
+                if (move.bigIdx === 4) score += attack*0.3 + centerBonus;
+                if (move.row === 1 && move.col === 1) score += attack*0.2 + centerBonus*0.5;
                 return score;
             }
+
             function checkBigBoardWinOnStatus(statusArray, player) {
                 const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
                 for (const [a,b,c] of lines) {
@@ -785,17 +749,347 @@
                 return false;
             }
 
-            // 反悔：人机模式下连续反悔直到轮到用户
-            function undo() {
-                if (isAnimating || aiThinking) return;
-                if (undoStack.length === 0) return;
+            // MCTS核心
+            function mctsFindBestMove(legalMoves) {
+                if (legalMoves.length === 0) return null;
+                if (legalMoves.length === 1) return legalMoves[0];
 
-                if (gameOver) {
-                    hideGameOverBanner();
-                    gameOver = false;
-                    gameResult = null;
+                const weights = trainedWeights || { attack: attackWeight, defense: defenseWeight, centerWeight: 0 };
+                const numSims = aiDifficulty === 'trained' ? 5000 : aiDifficulty === 'medium' ? 1500 : 500;
+                const isMobile = /Mobi|Android|iPhone/i.test(navigator.userAgent);
+                const sims = isMobile ? Math.floor(numSims * 0.6) : numSims;
+
+                // 初始化子节点统计
+                const childStats = legalMoves.map(m => ({ move: m, visits: 0, totalScore: 0, prior: 0 }));
+                // 计算先验
+                for (const child of childStats) {
+                    const h = heuristicEvalMove(child.move, state.currentPlayer, weights.attack, weights.defense, weights.centerWeight);
+                    child.prior = Math.max(1, h + 100);
+                }
+                const totalPrior = childStats.reduce((s, c) => s + c.prior, 0);
+                for (const child of childStats) child.prior = child.prior / totalPrior;
+
+                const currentPlayer = state.currentPlayer;
+                const snapshot = getSnapshot();
+
+                // MCTS主循环
+                for (let sim = 0; sim < sims; sim++) {
+                    // 克隆状态用于模拟
+                    const simState = {
+                        smallBoards: snapshot.smallBoards.map(b => b.map(r => [...r])),
+                        bigBoardStatus: [...snapshot.bigBoardStatus],
+                        currentPlayer: snapshot.currentPlayer,
+                        moveCount: snapshot.moveCount,
+                        moveHistory: [...moveHistory],
+                        forcedBoard: forcedBoard,
+                    };
+
+                    // 选择第一个移动（使用UCB+先验）
+                    let chosenIdx = 0;
+                    let bestUcb = -Infinity;
+                    for (let i = 0; i < childStats.length; i++) {
+                        const cs = childStats[i];
+                        const exploration = cs.visits === 0 ? Infinity : cs.totalScore / cs.visits + Math.sqrt(2 * Math.log(sim + 1) / cs.visits);
+                        const ucb = exploration + cs.prior * 1.5;
+                        if (ucb > bestUcb) { bestUcb = ucb; chosenIdx = i; }
+                    }
+
+                    const move = childStats[chosenIdx].move;
+                    // 执行移动
+                    simState.smallBoards[move.bigIdx][move.row][move.col] = simState.currentPlayer;
+                    simState.moveCount++;
+                    simState.moveHistory.push(move);
+
+                    // 结算小棋盘
+                    const smallWinner = checkSmallBoardWin(simState.smallBoards[move.bigIdx]);
+                    if (smallWinner) {
+                        simState.bigBoardStatus[move.bigIdx] = smallWinner;
+                    } else if (isBoardFull(simState.smallBoards[move.bigIdx])) {
+                        simState.bigBoardStatus[move.bigIdx] = BIG_BLOCKED;
+                    }
+
+                    // 检查胜负
+                    let gameResult = null;
+                    if (smallWinner) {
+                        const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+                        for (const [a,b,c] of lines) {
+                            if (simState.bigBoardStatus[a] === smallWinner && simState.bigBoardStatus[b] === smallWinner && simState.bigBoardStatus[c] === smallWinner) {
+                                gameResult = smallWinner;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (gameResult) {
+                        const score = gameResult === currentPlayer ? 1 : 0;
+                        childStats[chosenIdx].visits++;
+                        childStats[chosenIdx].totalScore += score;
+                        continue;
+                    }
+
+                    // 切换玩家并计算forcedBoard
+                    simState.currentPlayer = simState.currentPlayer === PLAYER_X ? PLAYER_O : PLAYER_X;
+                    if (simState.moveHistory.length <= 1) {
+                        simState.forcedBoard = null;
+                    } else {
+                        const lastMove = simState.moveHistory[simState.moveHistory.length - 1];
+                        simState.forcedBoard = lastMove.row * 3 + lastMove.col;
+                        if (simState.bigBoardStatus[simState.forcedBoard] !== BIG_OPEN) {
+                            let target = null;
+                            for (let i = simState.moveHistory.length - 2; i >= 0; i--) {
+                                const m = simState.moveHistory[i];
+                                const idx = m.row * 3 + m.col;
+                                if (simState.bigBoardStatus[idx] === BIG_OPEN) { target = idx; break; }
+                            }
+                            simState.forcedBoard = target;
+                        }
+                    }
+
+                    // 快速rollout
+                    const rolloutResult = rolloutFromState(simState, weights);
+                    const score = rolloutResult === currentPlayer ? 1 : rolloutResult === 'draw' ? 0.5 : 0;
+                    childStats[chosenIdx].visits++;
+                    childStats[chosenIdx].totalScore += score;
                 }
 
+                // 选择最佳移动（访问次数最多，其次胜率）
+                let bestMove = childStats[0].move;
+                let bestVal = -1;
+                for (const cs of childStats) {
+                    const val = cs.visits > 0 ? cs.visits : 0;
+                    if (val > bestVal) { bestVal = val; bestMove = cs.move; }
+                    else if (val === bestVal && cs.visits > 0) {
+                        const rate = cs.totalScore / cs.visits;
+                        const bestRate = childStats.find(c => c.move === bestMove)?.totalScore / Math.max(1, childStats.find(c => c.move === bestMove)?.visits) || 0;
+                        if (rate > bestRate) bestMove = cs.move;
+                    }
+                }
+                return bestMove;
+            }
+
+            // 从给定状态快速随机走子直到游戏结束
+            function rolloutFromState(simState, weights) {
+                let current = {
+                    smallBoards: simState.smallBoards.map(b => b.map(r => [...r])),
+                    bigBoardStatus: [...simState.bigBoardStatus],
+                    currentPlayer: simState.currentPlayer,
+                    moveHistory: [...simState.moveHistory],
+                    forcedBoard: simState.forcedBoard,
+                };
+
+                let maxMoves = 90;
+                while (maxMoves-- > 0) {
+                    // 获取合法移动
+                    const moves = [];
+                    for (let bi = 0; bi < 9; bi++) {
+                        if (current.bigBoardStatus[bi] !== BIG_OPEN) continue;
+                        if (current.forcedBoard !== null && current.forcedBoard !== bi) continue;
+                        for (let r = 0; r < 3; r++) {
+                            for (let c = 0; c < 3; c++) {
+                                if (current.smallBoards[bi][r][c] === EMPTY) moves.push({bigIdx: bi, row: r, col: c});
+                            }
+                        }
+                    }
+                    if (moves.length === 0) return 'draw';
+
+                    // 使用epsilon-greedy选择
+                    let chosenMove;
+                    if (Math.random() < 0.7) {
+                        // 启发式选择
+                        let bestScore = -Infinity;
+                        for (const m of moves) {
+                            const boardCopy = current.smallBoards[m.bigIdx].map(row => [...row]);
+                            boardCopy[m.row][m.col] = current.currentPlayer;
+                            const win = checkSmallBoardWin(boardCopy);
+                            let sc = 0;
+                            if (win === current.currentPlayer) sc += weights.attack * 3;
+                            else if (win === (current.currentPlayer === PLAYER_X ? PLAYER_O : PLAYER_X)) sc -= weights.defense * 3;
+                            const targetIdx = m.row*3 + m.col;
+                            if (targetIdx >= 0 && targetIdx < 9) {
+                                if (current.bigBoardStatus[targetIdx] === BIG_OPEN) sc -= weights.defense * 0.5;
+                                else sc += weights.attack * 0.8;
+                            }
+                            if (m.bigIdx === 4) sc += weights.attack * 0.3;
+                            if (m.row === 1 && m.col === 1) sc += weights.attack * 0.2;
+                            sc += Math.random() * 3;
+                            if (sc > bestScore) { bestScore = sc; chosenMove = m; }
+                        }
+                    } else {
+                        chosenMove = moves[Math.floor(Math.random() * moves.length)];
+                    }
+
+                    // 执行移动
+                    current.smallBoards[chosenMove.bigIdx][chosenMove.row][chosenMove.col] = current.currentPlayer;
+                    current.moveHistory.push(chosenMove);
+
+                    const winner = checkSmallBoardWin(current.smallBoards[chosenMove.bigIdx]);
+                    if (winner) {
+                        current.bigBoardStatus[chosenMove.bigIdx] = winner;
+                        const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+                        for (const [a,b,c] of lines) {
+                            if (current.bigBoardStatus[a] === winner && current.bigBoardStatus[b] === winner && current.bigBoardStatus[c] === winner) {
+                                return winner;
+                            }
+                        }
+                    } else if (isBoardFull(current.smallBoards[chosenMove.bigIdx])) {
+                        current.bigBoardStatus[chosenMove.bigIdx] = BIG_BLOCKED;
+                    }
+
+                    current.currentPlayer = current.currentPlayer === PLAYER_X ? PLAYER_O : PLAYER_X;
+                    if (current.moveHistory.length <= 1) {
+                        current.forcedBoard = null;
+                    } else {
+                        const lastMove = current.moveHistory[current.moveHistory.length - 1];
+                        current.forcedBoard = lastMove.row * 3 + lastMove.col;
+                        if (current.bigBoardStatus[current.forcedBoard] !== BIG_OPEN) {
+                            let target = null;
+                            for (let i = current.moveHistory.length - 2; i >= 0; i--) {
+                                const m = current.moveHistory[i];
+                                const idx = m.row * 3 + m.col;
+                                if (current.bigBoardStatus[idx] === BIG_OPEN) { target = idx; break; }
+                            }
+                            current.forcedBoard = target;
+                        }
+                    }
+                }
+                return 'draw';
+            }
+
+            // ==================== 训练AI ====================
+            async function trainAI(seconds) {
+                if (trainingInProgress) return;
+                trainingInProgress = true;
+                trainingStopRequested = false;
+                document.getElementById('btnTrainAI').disabled = true;
+                document.getElementById('btnStopTrain').disabled = false;
+                document.getElementById('trainStatus').textContent = '训练中... 0 局';
+                updateUI();
+
+                const startTime = Date.now();
+                let gamesPlayed = 0;
+                let bestWeights = trainedWeights ? { ...trainedWeights } : { attack: attackWeight, defense: defenseWeight, centerWeight: 0 };
+                let bestWinRate = -1;
+
+                while ((Date.now() - startTime) < seconds * 1000 && !trainingStopRequested) {
+                    const candidate = {
+                        attack: Math.max(0, Math.min(100, bestWeights.attack + (Math.random()*20-10))),
+                        defense: Math.max(0, Math.min(100, bestWeights.defense + (Math.random()*20-10))),
+                        centerWeight: Math.max(-20, Math.min(20, bestWeights.centerWeight + (Math.random()*10-5)))
+                    };
+                    // 用MCTS自对弈若干局评估
+                    const numGames = 3;
+                    let wins = 0;
+                    for (let i = 0; i < numGames; i++) {
+                        const result = selfPlayMCTS(candidate, 300);
+                        if (result === PLAYER_X) wins += 0.5;
+                        else if (result === PLAYER_O) wins -= 0.5;
+                        gamesPlayed++;
+                    }
+                    const winRate = wins / numGames;
+                    if (winRate > bestWinRate) {
+                        bestWeights = candidate;
+                        bestWinRate = winRate;
+                    }
+                    if (gamesPlayed % 5 === 0) {
+                        document.getElementById('trainStatus').textContent = `训练中... ${gamesPlayed} 局`;
+                        await new Promise(r => setTimeout(r, 0));
+                    }
+                }
+
+                trainedWeights = bestWeights;
+                trainTotalGames += gamesPlayed;
+                trainingInProgress = false;
+                document.getElementById('btnTrainAI').disabled = false;
+                document.getElementById('btnStopTrain').disabled = true;
+                document.getElementById('trainStatus').textContent = `训练完成：累计 ${trainTotalGames} 局，权重 A=${Math.round(bestWeights.attack)} D=${Math.round(bestWeights.defense)} C=${Math.round(bestWeights.centerWeight)}`;
+                document.getElementById('trainedOption').disabled = false;
+                updateUI();
+            }
+
+            function selfPlayMCTS(weights, numSims) {
+                // 简化版自对弈（使用启发式+MCTS思路）
+                const gameState = {
+                    smallBoards: Array.from({ length: 9 }, () => Array.from({ length: 3 }, () => Array(3).fill(EMPTY))),
+                    bigBoardStatus: Array(9).fill(BIG_OPEN),
+                    currentPlayer: PLAYER_X,
+                    moveHistory: [],
+                    forcedBoard: null,
+                };
+
+                while (true) {
+                    const moves = [];
+                    for (let bi = 0; bi < 9; bi++) {
+                        if (gameState.bigBoardStatus[bi] !== BIG_OPEN) continue;
+                        if (gameState.forcedBoard !== null && gameState.forcedBoard !== bi) continue;
+                        for (let r = 0; r < 3; r++) {
+                            for (let c = 0; c < 3; c++) {
+                                if (gameState.smallBoards[bi][r][c] === EMPTY) moves.push({bigIdx: bi, row: r, col: c});
+                            }
+                        }
+                    }
+                    if (moves.length === 0) return 'draw';
+
+                    // 用启发式+随机选择（快速）
+                    let bestMove = moves[0];
+                    let bestScore = -Infinity;
+                    for (const m of moves) {
+                        const boardCopy = gameState.smallBoards[m.bigIdx].map(r => [...r]);
+                        boardCopy[m.row][m.col] = gameState.currentPlayer;
+                        const win = checkSmallBoardWin(boardCopy);
+                        let sc = 0;
+                        const opp = gameState.currentPlayer === PLAYER_X ? PLAYER_O : PLAYER_X;
+                        if (win === gameState.currentPlayer) sc += weights.attack * 3;
+                        else if (win === opp) sc -= weights.defense * 3;
+                        const targetIdx = m.row*3 + m.col;
+                        if (targetIdx >= 0 && targetIdx < 9) {
+                            if (gameState.bigBoardStatus[targetIdx] === BIG_OPEN) sc -= weights.defense * 0.5;
+                            else sc += weights.attack * 0.8;
+                        }
+                        if (m.bigIdx === 4) sc += weights.attack * 0.3 + weights.centerWeight;
+                        if (m.row === 1 && m.col === 1) sc += weights.attack * 0.2 + weights.centerWeight * 0.5;
+                        sc += Math.random() * 5;
+                        if (sc > bestScore) { bestScore = sc; bestMove = m; }
+                    }
+
+                    gameState.smallBoards[bestMove.bigIdx][bestMove.row][bestMove.col] = gameState.currentPlayer;
+                    gameState.moveHistory.push(bestMove);
+
+                    const winner = checkSmallBoardWin(gameState.smallBoards[bestMove.bigIdx]);
+                    if (winner) {
+                        gameState.bigBoardStatus[bestMove.bigIdx] = winner;
+                        const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+                        for (const [a,b,c] of lines) {
+                            if (gameState.bigBoardStatus[a] === winner && gameState.bigBoardStatus[b] === winner && gameState.bigBoardStatus[c] === winner) return winner;
+                        }
+                    } else if (isBoardFull(gameState.smallBoards[bestMove.bigIdx])) {
+                        gameState.bigBoardStatus[bestMove.bigIdx] = BIG_BLOCKED;
+                    }
+
+                    gameState.currentPlayer = gameState.currentPlayer === PLAYER_X ? PLAYER_O : PLAYER_X;
+                    if (gameState.moveHistory.length <= 1) gameState.forcedBoard = null;
+                    else {
+                        const lastMove = gameState.moveHistory[gameState.moveHistory.length - 1];
+                        gameState.forcedBoard = lastMove.row * 3 + lastMove.col;
+                        if (gameState.bigBoardStatus[gameState.forcedBoard] !== BIG_OPEN) {
+                            let target = null;
+                            for (let i = gameState.moveHistory.length - 2; i >= 0; i--) {
+                                const m = gameState.moveHistory[i];
+                                const idx = m.row * 3 + m.col;
+                                if (gameState.bigBoardStatus[idx] === BIG_OPEN) { target = idx; break; }
+                            }
+                            gameState.forcedBoard = target;
+                        }
+                    }
+                }
+            }
+
+            function stopTraining() { if (trainingInProgress) trainingStopRequested = true; }
+
+            // ==================== 反悔/撤销 ====================
+            function undo() {
+                if (isAnimating || aiThinking || trainingInProgress) return;
+                if (undoStack.length === 0) return;
+                if (gameOver) { hideGameOverBanner(); gameOver = false; gameResult = null; }
                 let safety = 0;
                 while (undoStack.length > 0 && safety < 20) {
                     safety++;
@@ -806,22 +1100,16 @@
                     moveHistory.pop();
                     moveHistory.forEach((m, i) => { m.moveNumber = i + 1; });
                     rebuildMoveNumbersFromHistory();
-
                     if (gameMode === 'pvp') break;
-                    if (gameMode === 'pve') {
-                        if (state.currentPlayer === getUserSymbol()) break;
-                    }
+                    if (gameMode === 'pve' && state.currentPlayer === getUserSymbol()) break;
                 }
-
-                gameOver = false;
-                gameResult = null;
+                gameOver = false; gameResult = null;
                 setBacktrackInfo('', false);
-                updateUI();
-                renderBoard();
+                updateUI(); renderBoard();
             }
 
             function redo() {
-                if (isAnimating || aiThinking || gameOver) return;
+                if (isAnimating || aiThinking || trainingInProgress || gameOver) return;
                 if (redoStack.length === 0) return;
                 const move = redoStack.pop();
                 if (move.moveNumber !== state.moveCount + 1) return;
@@ -841,11 +1129,9 @@
                 let draw = false;
                 if (!winner) draw = checkDraw();
                 if (winner || draw) {
-                    gameOver = true;
-                    gameResult = winner || 'draw';
+                    gameOver = true; gameResult = winner || 'draw';
                     updateUI(); renderBoard();
-                    if (winner) showGameOverBanner(winner);
-                    else showGameOverBanner('draw');
+                    if (winner) showGameOverBanner(winner); else showGameOverBanner('draw');
                     return;
                 }
                 const rawForced = computeForcedBoardAfterMove();
@@ -855,24 +1141,19 @@
                     updateUI(); renderBoard();
                     if (backtrackAnimationEnabled) {
                         playBacktrackAnimation(bt.targetIdx, bt.checkedMoves).then(() => { updateUI(); renderBoard(); checkAITurn(); });
-                    } else {
-                        handleBacktrackWithoutAnimation(bt.targetIdx);
-                        checkAITurn();
-                    }
+                    } else { handleBacktrackWithoutAnimation(bt.targetIdx); checkAITurn(); }
                     return;
                 }
                 forcedBoard = rawForced;
-                updateUI(); renderBoard();
-                checkAITurn();
+                updateUI(); renderBoard(); checkAITurn();
             }
 
             function rebuildMoveNumbersFromHistory() {
                 state.moveNumbers = Array.from({ length: 9 }, () => Array.from({ length: 3 }, () => Array(3).fill(0)));
-                moveHistory.forEach(move => {
-                    state.moveNumbers[move.bigIdx][move.row][move.col] = move.moveNumber;
-                });
+                moveHistory.forEach(move => { state.moveNumbers[move.bigIdx][move.row][move.col] = move.moveNumber; });
             }
 
+            // ==================== UI渲染 ====================
             function renderBoard() {
                 const bigBoard = document.getElementById('bigBoard');
                 bigBoard.innerHTML = '';
@@ -885,7 +1166,7 @@
                     const moveNumbers = state.moveNumbers[bigIdx];
                     if (bigStatus === BIG_X || bigStatus === BIG_O) bigCell.classList.add('dimmed');
                     else if (bigStatus === BIG_BLOCKED) bigCell.classList.add('obstacle');
-                    if (!gameOver && !isAnimating && !aiThinking && forcedBoard === bigIdx && bigStatus === BIG_OPEN) bigCell.classList.add('highlight-target');
+                    if (!gameOver && !isAnimating && !aiThinking && !trainingInProgress && forcedBoard === bigIdx && bigStatus === BIG_OPEN) bigCell.classList.add('highlight-target');
 
                     const smallBoardEl = document.createElement('div');
                     smallBoardEl.className = 'small-board';
@@ -904,7 +1185,7 @@
                                 numSpan.textContent = String(moveNum).padStart(2, '0');
                                 cell.appendChild(numSpan);
                             }
-                            const isPlayable = !gameOver && !isAnimating && !aiThinking && bigStatus === BIG_OPEN && val === EMPTY && (forcedBoard === null || forcedBoard === bigIdx) && (gameMode === 'pvp' || state.currentPlayer === getUserSymbol());
+                            const isPlayable = !gameOver && !isAnimating && !aiThinking && !trainingInProgress && bigStatus === BIG_OPEN && val === EMPTY && (forcedBoard === null || forcedBoard === bigIdx) && (gameMode === 'pvp' || state.currentPlayer === getUserSymbol());
                             if (isPlayable) {
                                 cell.classList.add('playable');
                                 cell.addEventListener('click', (function(bi, rr, cc) { return function(e){ e.stopPropagation(); handleCellClick(bi, rr, cc); }; })(bigIdx, r, c));
@@ -937,9 +1218,8 @@
                 const btnUndo = document.getElementById('btnUndo');
                 const btnRedo = document.getElementById('btnRedo');
                 const btnToggleAnim = document.getElementById('btnToggleAnim');
-
-                btnUndo.disabled = undoStack.length === 0 || isAnimating || aiThinking;
-                btnRedo.disabled = redoStack.length === 0 || isAnimating || aiThinking || gameOver;
+                btnUndo.disabled = undoStack.length === 0 || isAnimating || aiThinking || trainingInProgress;
+                btnRedo.disabled = redoStack.length === 0 || isAnimating || aiThinking || trainingInProgress || gameOver;
                 btnToggleAnim.textContent = backtrackAnimationEnabled ? '🔁 回溯动画：开' : '🔁 回溯动画：关';
                 btnToggleAnim.classList.toggle('anim-off', !backtrackAnimationEnabled);
 
@@ -955,7 +1235,8 @@
                     if (aiThinking) { statusMsg.textContent = 'AI 思考中...'; statusMsg.classList.add('important'); }
                     else {
                         statusMsg.classList.remove('important');
-                        if (isAnimating) { statusMsg.textContent = '回溯中...'; statusMsg.classList.add('important'); }
+                        if (trainingInProgress) { statusMsg.textContent = 'AI训练中...'; statusMsg.classList.add('important'); }
+                        else if (isAnimating) { statusMsg.textContent = '回溯中...'; statusMsg.classList.add('important'); }
                         else if (forcedBoard !== null) { const r = Math.floor(forcedBoard/3)+1; const c = (forcedBoard%3)+1; statusMsg.textContent = `须在大格(${r},${c})落子`; }
                         else statusMsg.textContent = '自由落子';
                     }
@@ -980,12 +1261,18 @@
                 document.getElementById('playerRoleRow').style.display = mode === 'pve' ? 'flex' : 'none';
                 document.getElementById('aiDifficultyRow').style.display = mode === 'pve' ? 'flex' : 'none';
                 document.getElementById('advancedSettings').style.display = mode === 'pve' ? 'block' : 'none';
+                document.getElementById('trainingSection').style.display = mode === 'pve' ? 'flex' : 'none';
             }
             function applySettings() {
                 gameMode = document.getElementById('modeSelect').value;
-                selectedUserRole = document.getElementById('playerRole').value; // 只能是X或O
+                selectedUserRole = document.getElementById('playerRole').value;
                 userPlayer = selectedUserRole;
-                aiDifficulty = document.getElementById('aiDifficulty').value;
+                const diffSelect = document.getElementById('aiDifficulty');
+                aiDifficulty = diffSelect.value;
+                if (aiDifficulty === 'trained' && !trainedWeights) {
+                    aiDifficulty = 'medium';
+                    diffSelect.value = 'medium';
+                }
                 attackWeight = parseInt(document.getElementById('attackWeight').value);
                 defenseWeight = parseInt(document.getElementById('defenseWeight').value);
                 closeSettings();
@@ -1005,6 +1292,11 @@
                 document.getElementById('modeSelect').addEventListener('change', updateSettingsUI);
                 document.getElementById('attackWeight').addEventListener('input', function(){ document.getElementById('attackVal').textContent = this.value; });
                 document.getElementById('defenseWeight').addEventListener('input', function(){ document.getElementById('defenseVal').textContent = this.value; });
+                document.getElementById('btnTrainAI').addEventListener('click', () => {
+                    const seconds = parseInt(document.getElementById('trainSeconds').value) || 10;
+                    trainAI(seconds);
+                });
+                document.getElementById('btnStopTrain').addEventListener('click', stopTraining);
                 document.getElementById('modalOverlay').addEventListener('click', (e) => { if(e.target === e.currentTarget) e.currentTarget.classList.add('hidden'); });
                 document.getElementById('settingsModal').addEventListener('click', (e) => { if(e.target === e.currentTarget) e.currentTarget.classList.add('hidden'); });
                 document.addEventListener('keydown', (e) => {
@@ -1014,11 +1306,7 @@
                 });
             }
 
-            function init() {
-                bindEvents();
-                updateUI();
-                renderBoard();
-            }
+            function init() { bindEvents(); updateUI(); renderBoard(); }
             init();
         })();
     </script>
