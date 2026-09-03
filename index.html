@@ -172,6 +172,7 @@
         .small-cell.playable:active { transform: scale(0.95); background: rgba(249,202,36,0.35); }
         .small-cell.x-mark { color: var(--x-color); text-shadow: 0 0 8px var(--x-glow); }
         .small-cell.o-mark { color: var(--o-color); text-shadow: 0 0 8px var(--o-glow); }
+        .small-cell.analysis-move { opacity: 0.7; filter: brightness(0.8); }
         .small-cell.dimmed-cell { opacity: 0.25; transition: opacity 0.3s ease; }
         .move-number {
             position: absolute;
@@ -232,6 +233,9 @@
         .btn.redo-btn:hover { background:#365e48; }
         .btn.settings-btn { background:#2a4a5a; border-color:#3d7080; }
         .btn.settings-btn:hover { background:#365e70; }
+        .btn.analysis-btn { background:#5a3d3d; border-color:#804d4d; }
+        .btn.analysis-btn.active { background:#804d4d; box-shadow:0 0 12px #b36666; }
+        .btn.analysis-btn:hover { background:#704040; }
         .btn.toggle-anim-btn { background:#2a3a4a; border-color:#3d5a70; }
         .btn.toggle-anim-btn.anim-off { background:#4a2a2a; border-color:#703d3d; }
         .modal-overlay {
@@ -269,6 +273,8 @@
         .settings-row { display:flex; align-items:center; gap:8px; margin:8px 0; flex-wrap:wrap; }
         .settings-row label { font-size:0.9rem; color:var(--text); }
         .settings-row select, .settings-row input[type="range"], .settings-row input[type="number"] { background:var(--surface-light); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:4px 8px; }
+        .settings-checkbox { display:flex; align-items:center; gap:8px; }
+        .settings-checkbox input[type="checkbox"] { width:20px; height:20px; accent-color: var(--highlight); }
         .game-over-banner {
             position: fixed; top:50%; left:50%;
             transform: translate(-50%,-50%) scale(1);
@@ -317,6 +323,7 @@
         <div class="button-bar" id="buttonBar">
             <button class="btn rules-btn" id="btnRules">📖 规则</button>
             <button class="btn settings-btn" id="btnSettings">⚙️ 设置</button>
+            <button class="btn analysis-btn" id="btnAnalysisMode">🎭 演绎模式</button>
             <button class="btn toggle-anim-btn" id="btnToggleAnim">🔁 回溯动画：开</button>
             <button class="btn undo-btn" id="btnUndo">↩ 反悔</button>
             <button class="btn redo-btn" id="btnRedo" disabled>↪ 撤销</button>
@@ -345,9 +352,9 @@
             <div class="settings-row" id="aiDifficultyRow" style="display:none;">
                 <label for="aiDifficulty">AI 难度：</label>
                 <select id="aiDifficulty">
-                    <option value="simple">简单（启发式）</option>
-                    <option value="medium" selected>中等（MCTS 1500次模拟）</option>
-                    <option value="trained" id="trainedOption" disabled>困难（训练AI+MCTS 5000次）(如为灰色请先点击下方按钮训练)</option>
+                    <option value="simple">简单（MCTS 5000次模拟）</option>
+                    <option value="medium" selected>中等（MCTS 15000次模拟）</option>
+                    <option value="trained" id="trainedOption" disabled>困难（训练AI+MCTS 50000次）</option>
                 </select>
             </div>
             <details id="advancedSettings" style="display:none;">
@@ -416,7 +423,6 @@
 
     <script>
         (function() {
-            // ==================== 常量与状态 ====================
             const EMPTY = null;
             const PLAYER_X = 'X';
             const PLAYER_O = 'O';
@@ -435,7 +441,6 @@
             let isAnimating = false;
             let backtrackAnimationEnabled = true;
 
-            // 游戏设置
             let gameMode = 'pvp';
             let userPlayer = 'X';
             let selectedUserRole = 'X';
@@ -444,11 +449,15 @@
             let defenseWeight = 50;
             let aiThinking = false;
 
-            // 训练相关
             let trainingInProgress = false;
             let trainingStopRequested = false;
             let trainedWeights = null;
             let trainTotalGames = 0;
+
+            // 演绎模式相关
+            let analysisMode = false;
+            let analysisBaseSnapshot = null;
+            let analysisBaseMoveCount = 0;
 
             function createInitialState() {
                 return {
@@ -462,6 +471,7 @@
 
             function resetGame() {
                 if (isAnimating || aiThinking || trainingInProgress) return;
+                if (analysisMode) toggleAnalysisMode();
                 state = createInitialState();
                 moveHistory = [];
                 undoStack = [];
@@ -500,7 +510,6 @@
                 state.moveNumbers = snap.moveNumbers.map(b => b.map(r => [...r]));
             }
 
-            // ==================== 游戏核心逻辑 ====================
             function checkSmallBoardWin(board) {
                 const lines = [[0,0,0,1,0,2],[1,0,1,1,1,2],[2,0,2,1,2,2],[0,0,1,0,2,0],[0,1,1,1,2,1],[0,2,1,2,2,2],[0,0,1,1,2,2],[0,2,1,1,2,0]];
                 for (const [r1,c1,r2,c2,r3,c3] of lines) {
@@ -625,19 +634,21 @@
                 if (state.bigBoardStatus[bigIdx] !== BIG_OPEN) return;
                 if (state.smallBoards[bigIdx][row][col] !== EMPTY) return;
                 if (forcedBoard !== null && forcedBoard !== bigIdx) return;
-                if (gameMode === 'pve' && state.currentPlayer !== getUserSymbol()) return;
-                performMove(bigIdx, row, col);
+                // 演绎模式下允许任何一方落子
+                if (!analysisMode && gameMode === 'pve' && state.currentPlayer !== getUserSymbol()) return;
+                performMove(bigIdx, row, col, analysisMode);
             }
 
             function getUserSymbol() { return userPlayer; }
 
-            function performMove(bigIdx, row, col) {
+            function performMove(bigIdx, row, col, isAnalysis = false) {
                 const move = {
                     player: state.currentPlayer,
                     bigIdx, row, col,
                     moveNumber: state.moveCount + 1,
                     snapshot: getSnapshot(),
                     forcedBoardBefore: forcedBoard,
+                    isAnalysis: isAnalysis,
                 };
                 state.smallBoards[bigIdx][row][col] = state.currentPlayer;
                 state.moveNumbers[bigIdx][row][col] = move.moveNumber;
@@ -665,34 +676,35 @@
 
                 moveHistory.push(move);
                 state.currentPlayer = state.currentPlayer === PLAYER_X ? PLAYER_O : PLAYER_X;
+
                 let rawForced = computeForcedBoardAfterMove();
                 if (rawForced !== null && state.bigBoardStatus[rawForced] !== BIG_OPEN) {
                     const bt = getBacktrackTarget();
                     forcedBoard = bt.targetIdx;
                     updateUI(); renderBoard();
+                    // 演绎模式下的回溯动画也受按钮控制，不再额外排除
                     if (backtrackAnimationEnabled) {
-                        playBacktrackAnimation(bt.targetIdx, bt.checkedMoves).then(() => { updateUI(); renderBoard(); checkAITurn(); });
+                        playBacktrackAnimation(bt.targetIdx, bt.checkedMoves).then(() => { updateUI(); renderBoard(); if (!isAnalysis) checkAITurn(); });
                     } else {
                         handleBacktrackWithoutAnimation(bt.targetIdx);
-                        checkAITurn();
+                        if (!isAnalysis) checkAITurn();
                     }
                     return;
                 }
                 forcedBoard = rawForced;
                 updateUI(); renderBoard();
-                checkAITurn();
+                if (!isAnalysis) checkAITurn();
             }
 
             function checkAITurn() {
-                if (gameOver || isAnimating || aiThinking || trainingInProgress) return;
+                if (gameOver || isAnimating || aiThinking || trainingInProgress || analysisMode) return;
                 if (gameMode !== 'pve') return;
                 if (state.currentPlayer === getUserSymbol()) return;
                 aiMove();
             }
 
-            // ==================== MCTS AI ====================
             function aiMove() {
-                if (aiThinking || gameOver || isAnimating || trainingInProgress) return;
+                if (aiThinking || gameOver || isAnimating || trainingInProgress || analysisMode) return;
                 aiThinking = true;
                 updateUI();
                 setTimeout(() => {
@@ -717,7 +729,6 @@
                 return moves;
             }
 
-            // 启发式评估（用于MCTS先验和rollout）
             function heuristicEvalMove(move, player, attack, defense, centerBonus) {
                 let score = 0;
                 const board = state.smallBoards[move.bigIdx].map(r => [...r]);
@@ -749,19 +760,14 @@
                 return false;
             }
 
-            // MCTS核心
             function mctsFindBestMove(legalMoves) {
                 if (legalMoves.length === 0) return null;
                 if (legalMoves.length === 1) return legalMoves[0];
 
                 const weights = trainedWeights || { attack: attackWeight, defense: defenseWeight, centerWeight: 0 };
-                const numSims = aiDifficulty === 'trained' ? 5000 : aiDifficulty === 'medium' ? 1500 : 500;
-                const isMobile = /Mobi|Android|iPhone/i.test(navigator.userAgent);
-                const sims = isMobile ? Math.floor(numSims * 0.6) : numSims;
+                const numSims = aiDifficulty === 'trained' ? 50000 : aiDifficulty === 'medium' ? 15000 : 5000;
 
-                // 初始化子节点统计
                 const childStats = legalMoves.map(m => ({ move: m, visits: 0, totalScore: 0, prior: 0 }));
-                // 计算先验
                 for (const child of childStats) {
                     const h = heuristicEvalMove(child.move, state.currentPlayer, weights.attack, weights.defense, weights.centerWeight);
                     child.prior = Math.max(1, h + 100);
@@ -772,9 +778,7 @@
                 const currentPlayer = state.currentPlayer;
                 const snapshot = getSnapshot();
 
-                // MCTS主循环
-                for (let sim = 0; sim < sims; sim++) {
-                    // 克隆状态用于模拟
+                for (let sim = 0; sim < numSims; sim++) {
                     const simState = {
                         smallBoards: snapshot.smallBoards.map(b => b.map(r => [...r])),
                         bigBoardStatus: [...snapshot.bigBoardStatus],
@@ -784,7 +788,6 @@
                         forcedBoard: forcedBoard,
                     };
 
-                    // 选择第一个移动（使用UCB+先验）
                     let chosenIdx = 0;
                     let bestUcb = -Infinity;
                     for (let i = 0; i < childStats.length; i++) {
@@ -795,12 +798,10 @@
                     }
 
                     const move = childStats[chosenIdx].move;
-                    // 执行移动
                     simState.smallBoards[move.bigIdx][move.row][move.col] = simState.currentPlayer;
                     simState.moveCount++;
                     simState.moveHistory.push(move);
 
-                    // 结算小棋盘
                     const smallWinner = checkSmallBoardWin(simState.smallBoards[move.bigIdx]);
                     if (smallWinner) {
                         simState.bigBoardStatus[move.bigIdx] = smallWinner;
@@ -808,7 +809,6 @@
                         simState.bigBoardStatus[move.bigIdx] = BIG_BLOCKED;
                     }
 
-                    // 检查胜负
                     let gameResult = null;
                     if (smallWinner) {
                         const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
@@ -827,7 +827,6 @@
                         continue;
                     }
 
-                    // 切换玩家并计算forcedBoard
                     simState.currentPlayer = simState.currentPlayer === PLAYER_X ? PLAYER_O : PLAYER_X;
                     if (simState.moveHistory.length <= 1) {
                         simState.forcedBoard = null;
@@ -845,14 +844,12 @@
                         }
                     }
 
-                    // 快速rollout
                     const rolloutResult = rolloutFromState(simState, weights);
                     const score = rolloutResult === currentPlayer ? 1 : rolloutResult === 'draw' ? 0.5 : 0;
                     childStats[chosenIdx].visits++;
                     childStats[chosenIdx].totalScore += score;
                 }
 
-                // 选择最佳移动（访问次数最多，其次胜率）
                 let bestMove = childStats[0].move;
                 let bestVal = -1;
                 for (const cs of childStats) {
@@ -867,7 +864,6 @@
                 return bestMove;
             }
 
-            // 从给定状态快速随机走子直到游戏结束
             function rolloutFromState(simState, weights) {
                 let current = {
                     smallBoards: simState.smallBoards.map(b => b.map(r => [...r])),
@@ -879,7 +875,6 @@
 
                 let maxMoves = 90;
                 while (maxMoves-- > 0) {
-                    // 获取合法移动
                     const moves = [];
                     for (let bi = 0; bi < 9; bi++) {
                         if (current.bigBoardStatus[bi] !== BIG_OPEN) continue;
@@ -892,10 +887,8 @@
                     }
                     if (moves.length === 0) return 'draw';
 
-                    // 使用epsilon-greedy选择
                     let chosenMove;
                     if (Math.random() < 0.7) {
-                        // 启发式选择
                         let bestScore = -Infinity;
                         for (const m of moves) {
                             const boardCopy = current.smallBoards[m.bigIdx].map(row => [...row]);
@@ -918,7 +911,6 @@
                         chosenMove = moves[Math.floor(Math.random() * moves.length)];
                     }
 
-                    // 执行移动
                     current.smallBoards[chosenMove.bigIdx][chosenMove.row][chosenMove.col] = current.currentPlayer;
                     current.moveHistory.push(chosenMove);
 
@@ -955,7 +947,6 @@
                 return 'draw';
             }
 
-            // ==================== 训练AI ====================
             async function trainAI(seconds) {
                 if (trainingInProgress) return;
                 trainingInProgress = true;
@@ -976,7 +967,6 @@
                         defense: Math.max(0, Math.min(100, bestWeights.defense + (Math.random()*20-10))),
                         centerWeight: Math.max(-20, Math.min(20, bestWeights.centerWeight + (Math.random()*10-5)))
                     };
-                    // 用MCTS自对弈若干局评估
                     const numGames = 3;
                     let wins = 0;
                     for (let i = 0; i < numGames; i++) {
@@ -1007,7 +997,6 @@
             }
 
             function selfPlayMCTS(weights, numSims) {
-                // 简化版自对弈（使用启发式+MCTS思路）
                 const gameState = {
                     smallBoards: Array.from({ length: 9 }, () => Array.from({ length: 3 }, () => Array(3).fill(EMPTY))),
                     bigBoardStatus: Array(9).fill(BIG_OPEN),
@@ -1029,7 +1018,6 @@
                     }
                     if (moves.length === 0) return 'draw';
 
-                    // 用启发式+随机选择（快速）
                     let bestMove = moves[0];
                     let bestScore = -Infinity;
                     for (const m of moves) {
@@ -1085,7 +1073,46 @@
 
             function stopTraining() { if (trainingInProgress) trainingStopRequested = true; }
 
-            // ==================== 反悔/撤销 ====================
+            // 演绎模式切换
+            function toggleAnalysisMode() {
+                if (analysisMode) {
+                    // 退出演绎模式：恢复快照
+                    if (analysisBaseSnapshot) {
+                        restoreSnapshot(analysisBaseSnapshot);
+                        moveHistory = analysisBaseSnapshot.moveHistory || [];
+                        undoStack = analysisBaseSnapshot.undoStack || [];
+                        redoStack = analysisBaseSnapshot.redoStack || [];
+                        forcedBoard = analysisBaseSnapshot.forcedBoard;
+                    }
+                    analysisMode = false;
+                    analysisBaseSnapshot = null;
+                    analysisBaseMoveCount = 0;
+                    document.getElementById('btnAnalysisMode').classList.remove('active');
+                    // 重置游戏结束状态
+                    gameOver = false;
+                    gameResult = null;
+                    hideGameOverBanner();
+                    // 如果人机模式且轮到AI，触发AI
+                    if (gameMode === 'pve' && state.currentPlayer !== getUserSymbol() && !aiThinking) {
+                        setTimeout(() => { if (!gameOver && !aiThinking) aiMove(); }, 300);
+                    }
+                } else {
+                    if (gameOver) return;
+                    analysisBaseSnapshot = {
+                        ...getSnapshot(),
+                        moveHistory: [...moveHistory],
+                        undoStack: [...undoStack],
+                        redoStack: [...redoStack],
+                        forcedBoard: forcedBoard,
+                    };
+                    analysisBaseMoveCount = state.moveCount;
+                    analysisMode = true;
+                    document.getElementById('btnAnalysisMode').classList.add('active');
+                }
+                updateUI();
+                renderBoard();
+            }
+
             function undo() {
                 if (isAnimating || aiThinking || trainingInProgress) return;
                 if (undoStack.length === 0) return;
@@ -1100,8 +1127,13 @@
                     moveHistory.pop();
                     moveHistory.forEach((m, i) => { m.moveNumber = i + 1; });
                     rebuildMoveNumbersFromHistory();
-                    if (gameMode === 'pvp') break;
-                    if (gameMode === 'pve' && state.currentPlayer === getUserSymbol()) break;
+
+                    if (analysisMode) {
+                        break; // 演绎模式下只撤销一步
+                    } else {
+                        if (gameMode === 'pvp') break;
+                        if (gameMode === 'pve' && state.currentPlayer === getUserSymbol()) break;
+                    }
                 }
                 gameOver = false; gameResult = null;
                 setBacktrackInfo('', false);
@@ -1153,7 +1185,6 @@
                 moveHistory.forEach(move => { state.moveNumbers[move.bigIdx][move.row][move.col] = move.moveNumber; });
             }
 
-            // ==================== UI渲染 ====================
             function renderBoard() {
                 const bigBoard = document.getElementById('bigBoard');
                 bigBoard.innerHTML = '';
@@ -1185,7 +1216,10 @@
                                 numSpan.textContent = String(moveNum).padStart(2, '0');
                                 cell.appendChild(numSpan);
                             }
-                            const isPlayable = !gameOver && !isAnimating && !aiThinking && !trainingInProgress && bigStatus === BIG_OPEN && val === EMPTY && (forcedBoard === null || forcedBoard === bigIdx) && (gameMode === 'pvp' || state.currentPlayer === getUserSymbol());
+                            if (analysisMode && moveNum > analysisBaseMoveCount) {
+                                cell.classList.add('analysis-move');
+                            }
+                            const isPlayable = !gameOver && !isAnimating && !aiThinking && !trainingInProgress && bigStatus === BIG_OPEN && val === EMPTY && (forcedBoard === null || forcedBoard === bigIdx) && (gameMode === 'pvp' || state.currentPlayer === getUserSymbol() || analysisMode);
                             if (isPlayable) {
                                 cell.classList.add('playable');
                                 cell.addEventListener('click', (function(bi, rr, cc) { return function(e){ e.stopPropagation(); handleCellClick(bi, rr, cc); }; })(bigIdx, r, c));
@@ -1217,13 +1251,21 @@
                 const statusMsg = document.getElementById('statusMessage');
                 const btnUndo = document.getElementById('btnUndo');
                 const btnRedo = document.getElementById('btnRedo');
+                const btnAnalysis = document.getElementById('btnAnalysisMode');
                 const btnToggleAnim = document.getElementById('btnToggleAnim');
                 btnUndo.disabled = undoStack.length === 0 || isAnimating || aiThinking || trainingInProgress;
                 btnRedo.disabled = redoStack.length === 0 || isAnimating || aiThinking || trainingInProgress || gameOver;
+                btnAnalysis.textContent = analysisMode ? '🎭 退出演绎模式' : '🎭 演绎模式';
+                btnAnalysis.classList.toggle('active', analysisMode);
                 btnToggleAnim.textContent = backtrackAnimationEnabled ? '🔁 回溯动画：开' : '🔁 回溯动画：关';
                 btnToggleAnim.classList.toggle('anim-off', !backtrackAnimationEnabled);
 
-                if (gameOver) {
+                if (analysisMode) {
+                    indicator.className = 'player-indicator game-over';
+                    indicator.textContent = '🎭 演绎模式';
+                    statusMsg.textContent = '推演中，落子及撤销/反悔在退出后失效';
+                    statusMsg.classList.add('important');
+                } else if (gameOver) {
                     indicator.className = 'player-indicator game-over';
                     if (gameResult === PLAYER_X) { indicator.textContent = '✕ X 获胜！'; statusMsg.textContent = 'X 在大棋盘上完成三连'; }
                     else if (gameResult === PLAYER_O) { indicator.textContent = '◯ O 获胜！'; statusMsg.textContent = 'O 在大棋盘上完成三连'; }
@@ -1286,9 +1328,10 @@
                 document.getElementById('btnRules').addEventListener('click', () => document.getElementById('modalOverlay').classList.remove('hidden'));
                 document.getElementById('btnCloseRules').addEventListener('click', () => document.getElementById('modalOverlay').classList.add('hidden'));
                 document.getElementById('btnDismissBanner').addEventListener('click', hideGameOverBanner);
-                document.getElementById('btnToggleAnim').addEventListener('click', () => { backtrackAnimationEnabled = !backtrackAnimationEnabled; updateUI(); });
                 document.getElementById('btnSettings').addEventListener('click', openSettings);
                 document.getElementById('btnApplySettings').addEventListener('click', applySettings);
+                document.getElementById('btnAnalysisMode').addEventListener('click', toggleAnalysisMode);
+                document.getElementById('btnToggleAnim').addEventListener('click', () => { backtrackAnimationEnabled = !backtrackAnimationEnabled; updateUI(); });
                 document.getElementById('modeSelect').addEventListener('change', updateSettingsUI);
                 document.getElementById('attackWeight').addEventListener('input', function(){ document.getElementById('attackVal').textContent = this.value; });
                 document.getElementById('defenseWeight').addEventListener('input', function(){ document.getElementById('defenseVal').textContent = this.value; });
